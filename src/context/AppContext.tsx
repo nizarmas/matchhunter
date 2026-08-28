@@ -124,7 +124,7 @@ type AppCtx = {
   hasMembership: boolean
   sendRequest: (matchId: string) => void
   payForMatch: (matchId: string, gatewayId: string, gateway: Transaction['gateway']) => void
-  decideIncoming: (matchId: string, approve: boolean, share?: { email: boolean; phone: boolean }) => void
+  decideIncoming: (matchId: string, approve: boolean, share?: { email: boolean; phone: boolean }) => Promise<string | undefined>
   sendMessage: (matchId: string, body: string) => Promise<'ok' | 'warned' | 'blocked' | 'failed'>
   isAdmin: boolean
   paymentSettings: PaymentSettings
@@ -276,11 +276,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     async function tick() {
       try {
-        const [cloudMatches, cloudNotes, cloudMsgs, lastSeen] = await Promise.all([
+        const [cloudMatches, cloudNotes, cloudMsgs, lastSeen, cloudProfiles] = await Promise.all([
           fetchCloudMatches(uid),
           fetchCloudNotifications(uid),
           fetchVisibleCloudMessages(),
           fetchLastSeenMap(),
+          fetchCloudProfiles(),
         ])
         patch((s) => {
           let matches = mergeMatchList(cloudMatches, s.matches)
@@ -310,7 +311,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             }
           }
-          const profiles = s.profiles.map((p) =>
+          const profiles = mergeProfiles(cloudProfiles, s.profiles).map((p) =>
             lastSeen.has(p.id) ? { ...p, lastSeen: lastSeen.get(p.id) } : p,
           )
           return {
@@ -566,14 +567,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshMatches: () => {
       if (!user) return
       releaseInbox()
-      patch((s) => {
-        const me = s.profiles.find((p) => p.id === user.id)
-        if (!me) return s
-        const others = s.matches.filter((m) => m.userId !== me.id && !m.candidateId.startsWith('seed-'))
-        const curated = curateMatches(me, s.profiles, s.matches)
-        void upsertCloudMatches(curated)
-        return { ...s, matches: [...others, ...curated] }
-      })
+      void (async () => {
+        let cloudProfiles: Profile[] = []
+        let cloudMatches: Match[] = []
+        try {
+          cloudProfiles = await fetchCloudProfiles()
+          cloudMatches = await fetchCloudMatches(user.id)
+        } catch {
+          /* use local */
+        }
+        patch((s) => {
+          const me = (cloudProfiles.length ? mergeProfiles(cloudProfiles, s.profiles) : s.profiles).find(
+            (p) => p.id === user.id,
+          )
+          if (!me) return s
+          const profiles = cloudProfiles.length ? mergeProfiles(cloudProfiles, s.profiles) : s.profiles
+          const merged = cloudMatches.length ? mergeMatchList(cloudMatches, s.matches) : s.matches
+          const others = merged.filter((m) => m.userId !== me.id && !m.candidateId.startsWith('seed-'))
+          const curated = curateMatches(me, profiles, merged)
+          void upsertCloudMatches(curated)
+          return { ...s, profiles, matches: [...others, ...curated] }
+        })
+      })()
     },
     rejectMatch: (matchId) => {
       if (!user) return
@@ -681,58 +696,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : s.matches,
       }))
     },
-    decideIncoming: (matchId, approve, share) => {
-      if (!user) return
-      patch((s) => {
-        const match = s.matches.find((m) => m.id === matchId)
-        const otherId = match ? match.userId : null
-        const note: AppNotification | null = match
-          ? {
-              id: crypto.randomUUID(),
-              userId: match.userId,
-              matchId,
-              type: approve ? 'approved' : 'declined',
-              body: user.name,
-              read: false,
-              createdAt: new Date().toISOString(),
-            }
-          : null
-        const next = s.matches.map((m) => {
-          if (m.id === matchId) {
-            return {
-              ...m,
-              status: (approve ? 'partner_approved' : 'declined') as Match['status'],
-              approvedAt: approve ? new Date().toISOString() : m.approvedAt,
-              shareEmail: approve ? Boolean(share?.email) : false,
-              sharePhone: approve ? Boolean(share?.phone) : false,
-            }
-          }
-          if (
-            approve &&
-            otherId &&
-            (m.status === 'pending' || m.status === 'selected_and_paid') &&
-            ((m.userId === user.id && m.candidateId === otherId) || (m.userId === otherId && m.candidateId === user.id))
-          ) {
-            return {
+    decideIncoming: async (matchId, approve, share) => {
+      if (!user) return undefined
+      const match = store.matches.find((m) => m.id === matchId)
+      if (!match) return undefined
+      const otherId = match.userId
+      const updated: Match = {
+        ...match,
+        status: approve ? 'partner_approved' : 'declined',
+        approvedAt: approve ? new Date().toISOString() : match.approvedAt,
+        shareEmail: approve ? Boolean(share?.email) : false,
+        sharePhone: approve ? Boolean(share?.phone) : false,
+      }
+      const extras = approve
+        ? store.matches
+            .filter(
+              (m) =>
+                m.id !== matchId &&
+                involvesPair(m, user.id, otherId) &&
+                (m.status === 'pending' || m.status === 'selected_and_paid'),
+            )
+            .map((m) => ({
               ...m,
               status: 'partner_approved' as const,
               approvedAt: new Date().toISOString(),
-            }
-          }
-          return m
-        })
-        const found = next.find((m) => m.id === matchId)
-        const extras = otherId
-          ? next.filter((m) => m.id !== matchId && involvesPair(m, user.id, otherId) && m.status === 'partner_approved')
-          : []
-        if (found) void upsertCloudMatches([found, ...extras])
-        if (match) void insertCloudNotification(match.userId, matchId, approve ? 'approved' : 'declined', user.name)
-        return {
-          ...s,
-          notifications: note ? [...s.notifications, note] : s.notifications,
-          matches: next,
-        }
-      })
+            }))
+        : []
+      const note: AppNotification = {
+        id: crypto.randomUUID(),
+        userId: match.userId,
+        matchId,
+        type: approve ? 'approved' : 'declined',
+        body: user.name,
+        read: false,
+        createdAt: new Date().toISOString(),
+      }
+      patch((s) => ({
+        ...s,
+        notifications: [...s.notifications, note],
+        matches: s.matches.map((m) => {
+          if (m.id === matchId) return updated
+          const extra = extras.find((x) => x.id === m.id)
+          return extra ?? m
+        }),
+      }))
+      try {
+        await upsertCloudMatches([updated, ...extras])
+        await insertCloudNotification(match.userId, matchId, approve ? 'approved' : 'declined', user.name)
+      } catch {
+        void upsertCloudMatches([updated, ...extras])
+      }
+      return approve ? updated.id : undefined
     },
     sendMessage: async (matchId, body) => {
       if (!user || !body.trim()) return 'ok'

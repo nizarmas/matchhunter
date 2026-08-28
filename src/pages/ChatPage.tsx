@@ -9,7 +9,7 @@ import { otherParty, pairMatchesForPerson, pickCanonicalMatch } from '../lib/pai
 export function ChatPage() {
   const { matchId } = useParams()
   const nav = useNavigate()
-  const { t, user, allMatches, messages, notifications, profileById, sendMessage, markMatchRead, setOpenChat } =
+  const { t, user, allMatches, messages, notifications, profileById, sendMessage, markMatchRead, setOpenChat, decideIncoming } =
     useApp()
   const [body, setBody] = useState('')
   const [notice, setNotice] = useState('')
@@ -22,9 +22,25 @@ export function ChatPage() {
   const match =
     user && otherId ? pickCanonicalMatch(allMatches, user.id, otherId, messages) ?? opened : opened
   const threadIds = useMemo(() => {
-    if (!user || !other) return new Set<string>()
-    return threadMatchIds(allMatches, messages, user.id, other, profileById)
-  }, [allMatches, messages, user, other, profileById])
+    if (!user) return new Set<string>()
+    if (other) return threadMatchIds(allMatches, messages, user.id, other, profileById)
+    const ids = new Set<string>()
+    if (opened) ids.add(opened.id)
+    if (otherId) {
+      for (const m of allMatches) {
+        if (
+          (m.userId === user.id && m.candidateId === otherId) ||
+          (m.userId === otherId && m.candidateId === user.id)
+        ) {
+          ids.add(m.id)
+        }
+      }
+      for (const msg of messages) {
+        if (msg.senderId === otherId) ids.add(msg.matchId)
+      }
+    }
+    return ids
+  }, [allMatches, messages, user, other, otherId, opened, profileById])
   const threadKey = [...threadIds].sort().join('|')
   const unreadHere = notifications.filter(
     (n) => (n.type === 'message' || n.type === 'approved') && !n.read && n.matchId && threadIds.has(n.matchId),
@@ -59,7 +75,7 @@ export function ChatPage() {
     el.scrollTop = el.scrollHeight
   }, [thread.at(-1)?.id])
 
-  if (!match || match.status !== 'partner_approved' || !other || !user) {
+  if (!user || !match) {
     return (
       <div>
         <Link to="/app/approvals" className="mb-4 inline-block text-sm font-semibold text-wine">
@@ -70,9 +86,44 @@ export function ChatPage() {
     )
   }
 
+  if (match.status === 'selected_and_paid' && match.candidateId === user.id) {
+    return (
+      <div>
+        <Link to="/app/approvals" className="mb-4 inline-block text-sm font-semibold text-wine">
+          ← {t.backToInbox}
+        </Link>
+        <p className="mt-4 text-ink/70">{t.incoming}</p>
+        <h1 className="mt-1 text-2xl font-bold">{other?.name ?? t.them}</h1>
+        <button
+          type="button"
+          className="mt-6 w-full max-w-sm rounded-2xl bg-olive py-3 font-bold text-paper"
+          onClick={async () => {
+            const chatId = await decideIncoming(match.id, true)
+            if (chatId) nav(`/app/chat/${chatId}`, { replace: true })
+          }}
+        >
+          {t.approve}
+        </button>
+      </div>
+    )
+  }
+
+  if (match.status !== 'partner_approved') {
+    return (
+      <div>
+        <Link to="/app/approvals" className="mb-4 inline-block text-sm font-semibold text-wine">
+          ← {t.backToInbox}
+        </Link>
+        <p className="text-ink/60">{t.waiting}</p>
+      </div>
+    )
+  }
+
+  const displayName = other?.name ?? t.them
+
   const openId = match.id
   const blocked = Boolean(user.chatBlocked)
-  const revealed = pairSharedContact(pair, other)
+  const revealed = other ? pairSharedContact(pair, other) : { phone: '', email: '' }
 
   async function onSend(e: FormEvent) {
     e.preventDefault()
@@ -91,8 +142,8 @@ export function ChatPage() {
         <Link to="/app/approvals" className="mb-2 inline-block text-sm font-semibold text-wine">
           ← {t.backToInbox}
         </Link>
-        <h1 className="text-lg font-bold">{other.name}</h1>
-        <OnlineBadge lastSeen={other.lastSeen} />
+        <h1 className="text-lg font-bold">{displayName}</h1>
+        {other ? <OnlineBadge lastSeen={other.lastSeen} /> : null}
         {revealed.phone || revealed.email ? (
           <div className="mt-1 space-y-0.5 text-sm text-ink/70">
             {revealed.phone ? (

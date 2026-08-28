@@ -98,20 +98,21 @@ function IncomingCard({ match }: { match: Match }) {
   const p = profileById(match.userId)
   const [shareEmail, setShareEmail] = useState(false)
   const [sharePhone, setSharePhone] = useState(false)
-  if (!p) return null
   const canEmail = Boolean(user?.email)
   const canPhone = Boolean(user?.phone)
+  const name = p?.name ?? t.incoming
 
   return (
     <article className="rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5">
       <p className="text-sm font-semibold text-gold">{t.incoming}</p>
-      <h2 className="mt-1 text-xl font-bold">{p.name}</h2>
-      <OnlineBadge lastSeen={p.lastSeen} />
+      <h2 className="mt-1 text-xl font-bold">{name}</h2>
+      {p ? <OnlineBadge lastSeen={p.lastSeen} /> : null}
       <p className="text-sm text-ink/60">
-        {p.questionnaire.age} · {tPath(lang, `region.${p.questionnaire.region}`)} ·{' '}
-        {tPath(lang, `faith.${p.questionnaire.faith}`)}
+        {p
+          ? `${p.questionnaire.age} · ${tPath(lang, `region.${p.questionnaire.region}`)} · ${tPath(lang, `faith.${p.questionnaire.faith}`)}`
+          : t.waitingSentHint}
       </p>
-      <p className="mt-3 text-[15px] text-ink/80">{p.questionnaire.bio}</p>
+      {p?.questionnaire.bio ? <p className="mt-3 text-[15px] text-ink/80">{p.questionnaire.bio}</p> : null}
       <div className="mt-4 space-y-2 rounded-2xl bg-mist/80 p-4">
         <p className="text-sm font-semibold">{t.shareContactHint}</p>
         <label className="flex items-start gap-3 text-sm">
@@ -145,9 +146,12 @@ function IncomingCard({ match }: { match: Match }) {
       <div className="mt-4 flex gap-2">
         <button
           type="button"
-          onClick={() => {
-            decideIncoming(match.id, true, { email: shareEmail && canEmail, phone: sharePhone && canPhone })
-            nav(`/app/chat/${match.id}`)
+          onClick={async () => {
+            const chatId = await decideIncoming(match.id, true, {
+              email: shareEmail && canEmail,
+              phone: sharePhone && canPhone,
+            })
+            if (chatId) nav(`/app/chat/${chatId}`)
           }}
           className="flex-1 rounded-2xl bg-olive py-3 font-bold text-paper"
         >
@@ -168,12 +172,11 @@ function IncomingCard({ match }: { match: Match }) {
 function WaitingCard({ match }: { match: Match }) {
   const { t, profileById } = useApp()
   const p = profileById(match.candidateId)
-  if (!p) return null
   return (
     <article className="rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5">
       <p className="text-sm font-semibold text-gold">{t.waiting}</p>
-      <h2 className="mt-1 text-xl font-bold">{p.name}</h2>
-      <OnlineBadge lastSeen={p.lastSeen} />
+      <h2 className="mt-1 text-xl font-bold">{p?.name ?? t.waiting}</h2>
+      {p ? <OnlineBadge lastSeen={p.lastSeen} /> : null}
       <p className="mt-2 text-sm text-ink/60">{t.paidHint}</p>
     </article>
   )
@@ -183,7 +186,6 @@ function ConversationCard({ match, unread, pairIds }: { match: Match; unread: nu
   const { t, user, profileById, messages } = useApp()
   if (!user) return null
   const other = profileById(match.userId === user.id ? match.candidateId : match.userId)
-  if (!other) return null
   const last = messages
     .filter((m) => pairIds.has(m.matchId))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
@@ -197,8 +199,8 @@ function ConversationCard({ match, unread, pairIds }: { match: Match; unread: nu
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm text-olive">{t.conversations}</p>
-          <h2 className="text-xl font-bold">{other.name}</h2>
-          <OnlineBadge lastSeen={other.lastSeen} />
+          <h2 className="text-xl font-bold">{other?.name ?? t.conversations}</h2>
+          {other ? <OnlineBadge lastSeen={other.lastSeen} /> : null}
         </div>
         {unread > 0 && (
           <span className="rounded-full bg-wine px-2.5 py-1 text-xs font-bold text-paper">{unread}</span>
