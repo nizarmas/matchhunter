@@ -9,9 +9,8 @@ const item = ({ isActive }: { isActive: boolean }) =>
   }`
 
 export function Shell() {
-  const { t, incoming, logout, isAdmin } = useApp()
+  const { t, inboxBadge, logout, isAdmin } = useApp()
   const nav = useNavigate()
-  const waiting = incoming.filter((m) => m.status === 'selected_and_paid').length
 
   return (
     <div className="noise min-h-dvh">
@@ -48,8 +47,8 @@ export function Shell() {
             <NavLink to="/app/approvals" className={item}>
               <Inbox className="size-4" />
               {t.approvals}
-              {waiting > 0 && (
-                <span className="rounded-full bg-gold px-2 py-0.5 text-[10px] text-ink">{waiting}</span>
+              {inboxBadge > 0 && (
+                <span className="rounded-full bg-gold px-2 py-0.5 text-[10px] text-ink">{inboxBadge}</span>
               )}
             </NavLink>
             <NavLink to="/app/profile" className={item}>
@@ -89,8 +88,10 @@ export function Shell() {
           <NavLink to="/app/approvals" className={item}>
             <span className="relative">
               <Inbox className="size-5" />
-              {waiting > 0 && (
-                <span className="absolute -end-2 -top-1 size-2 rounded-full bg-wine" />
+              {inboxBadge > 0 && (
+                <span className="absolute -end-2 -top-1 min-w-4 rounded-full bg-wine px-1 text-center text-[10px] font-bold leading-4 text-paper">
+                  {inboxBadge}
+                </span>
               )}
             </span>
             {t.approvals}

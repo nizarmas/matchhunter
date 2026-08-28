@@ -30,6 +30,7 @@ type ProfileRow = {
   chat_warnings: number | null
   chat_blocked: boolean | null
   account_blocked: boolean | null
+  last_seen: string | null
   created_at: string
 }
 
@@ -79,6 +80,7 @@ export function rowToProfile(row: ProfileRow): Profile {
     chatWarnings: row.chat_warnings ?? 0,
     chatBlocked: Boolean(row.chat_blocked),
     accountBlocked: Boolean(row.account_blocked),
+    lastSeen: row.last_seen ?? undefined,
     createdAt: row.created_at,
   }
 }
@@ -145,6 +147,17 @@ export async function fetchCloudNotifications(userId: string): Promise<AppNotifi
 export async function markCloudNotificationsRead(userId: string) {
   if (!supabase || !isUuid(userId)) return
   await supabase.from('notifications').update({ read: true }).eq('user_id', userId).eq('read', false)
+}
+
+export async function markCloudMatchMessagesRead(userId: string, matchId: string) {
+  if (!supabase || !isUuid(userId) || !isUuid(matchId)) return
+  await supabase
+    .from('notifications')
+    .update({ read: true })
+    .eq('user_id', userId)
+    .eq('match_id', matchId)
+    .eq('type', 'message')
+    .eq('read', false)
 }
 
 function rowToMessage(m: { id: string; match_id: string; sender_id: string; body: string; created_at: string }): ChatMessage {
@@ -302,6 +315,24 @@ export async function fetchCloudTransactions(): Promise<Transaction[]> {
     status: row.status as Transaction['status'],
     createdAt: row.created_at as string,
   }))
+}
+
+export async function fetchLastSeenMap() {
+  const map = new Map<string, string>()
+  if (!supabase) return map
+  const { data, error } = await supabase.from('profiles').select('id, last_seen')
+  if (error || !data) return map
+  for (const row of data) {
+    const seen = row.last_seen as string | null
+    if (row.id && seen) map.set(row.id as string, seen)
+  }
+  return map
+}
+
+export async function touchLastSeen(userId: string) {
+  if (!supabase || !isUuid(userId)) return
+  if (typeof document !== 'undefined' && document.hidden) return
+  await supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', userId)
 }
 
 export { supabase }

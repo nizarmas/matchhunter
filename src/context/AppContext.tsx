@@ -5,11 +5,15 @@ import {
   fetchCloudNotifications,
   fetchCloudTransactions,
   fetchVisibleCloudMessages,
+  fetchCloudMessages,
   fetchCloudProfiles,
+  fetchLastSeenMap,
+  touchLastSeen,
   insertCloudMessage,
   insertCloudNotification,
   insertCloudTransaction,
   markCloudNotificationsRead,
+  markCloudMatchMessagesRead,
   upsertCloudMatches,
   upsertCloudProfile,
 } from '../lib/db'
@@ -107,6 +111,8 @@ type AppCtx = {
   adminRevokeMembership: (profileId: string) => Promise<void>
   adminResetAllMemberships: () => Promise<void>
   markNotificationsRead: () => void
+  markMatchRead: (matchId: string) => void
+  inboxBadge: number
 }
 
 const Ctx = createContext<AppCtx | null>(null)
@@ -210,10 +216,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const uid = store.currentUserId
     async function tick() {
       try {
-        const [cloudMatches, cloudNotes, cloudMsgs] = await Promise.all([
+        const [cloudMatches, cloudNotes, cloudMsgs, lastSeen] = await Promise.all([
           fetchCloudMatches(uid),
           fetchCloudNotifications(uid),
           fetchVisibleCloudMessages(),
+          fetchLastSeenMap(),
         ])
         patch((s) => {
           const unique = new Map(cloudMatches.map((m) => [m.id, m]))
@@ -223,8 +230,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           for (const n of cloudNotes) noteMap.set(n.id, n)
           const msgMap = new Map(s.messages.map((m) => [m.id, m]))
           for (const m of cloudMsgs) msgMap.set(m.id, m)
+          const profiles = s.profiles.map((p) =>
+            lastSeen.has(p.id) ? { ...p, lastSeen: lastSeen.get(p.id) } : p,
+          )
           return {
             ...s,
+            profiles,
             matches,
             notifications: [...noteMap.values()],
             messages: [...msgMap.values()],
@@ -235,6 +246,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
     const n = window.setInterval(() => void tick(), 3000)
+    void tick()
     const channel = client
       .channel(`mh-live-${uid}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => void tick())
@@ -243,6 +255,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       window.clearInterval(n)
       void client.removeChannel(channel)
+    }
+  }, [store.currentUserId])
+
+  useEffect(() => {
+    if (!supabase || !store.currentUserId) return
+    const uid = store.currentUserId
+    function beat() {
+      void touchLastSeen(uid)
+    }
+    beat()
+    const n = window.setInterval(beat, 20000)
+    document.addEventListener('visibilitychange', beat)
+    return () => {
+      window.clearInterval(n)
+      document.removeEventListener('visibilitychange', beat)
     }
   }, [store.currentUserId])
 
@@ -263,6 +290,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ),
     [store.matches, store.currentUserId],
   )
+
+  const unreadChat = store.notifications.filter(
+    (n) => n.userId === store.currentUserId && n.type === 'message' && !n.read,
+  ).length
+  const waitingRequests = incoming.filter((m) => m.status === 'selected_and_paid').length
+  const inboxBadge = waitingRequests + unreadChat
 
   const lastPayment = store.transactions
     .filter((tx) => tx.userId === store.currentUserId && tx.status === 'success')
@@ -290,6 +323,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     matches,
     allMatches: store.matches,
     incoming,
+    inboxBadge,
     notifications: store.notifications.filter((n) => n.userId === store.currentUserId),
     messages: store.messages,
     register: async (name, phone, email, password) => {
@@ -566,9 +600,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         body: body.trim(),
         createdAt: new Date().toISOString(),
       }
+      const match = store.matches.find((m) => m.id === matchId)
+      const otherId = match ? (match.userId === user.id ? match.candidateId : match.userId) : null
+      const note: AppNotification | null =
+        otherId && otherId !== user.id
+          ? {
+              id: crypto.randomUUID(),
+              userId: otherId,
+              matchId,
+              type: 'message',
+              body: msg.body.slice(0, 80),
+              read: false,
+              createdAt: msg.createdAt,
+            }
+          : null
       void (async () => {
         try {
+          if (match) await upsertCloudMatches([match])
           await insertCloudMessage(msg)
+          if (otherId) await insertCloudNotification(otherId, matchId, 'message', msg.body.slice(0, 80))
         } catch {
           /* local copy still kept */
         }
@@ -583,7 +633,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           /* keep local */
         }
       })()
-      patch((s) => ({ ...s, messages: [...s.messages, msg] }))
+      patch((s) => ({
+        ...s,
+        messages: [...s.messages, msg],
+        notifications: note ? [...s.notifications, note] : s.notifications,
+      }))
       return 'ok'
     },
     adminSetBlocked: (profileId, blocked) => {
@@ -690,6 +744,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       patch((s) => ({
         ...s,
         notifications: s.notifications.map((n) => (n.userId === user.id ? { ...n, read: true } : n)),
+      }))
+    },
+    markMatchRead: (matchId) => {
+      if (!user) return
+      void markCloudMatchMessagesRead(user.id, matchId)
+      void fetchCloudMessages(matchId).then((cloud) => {
+        patch((s) => {
+          const msgMap = new Map(s.messages.map((m) => [m.id, m]))
+          for (const m of cloud) msgMap.set(m.id, m)
+          return { ...s, messages: [...msgMap.values()] }
+        })
+      })
+      patch((s) => ({
+        ...s,
+        notifications: s.notifications.map((n) =>
+          n.userId === user.id && n.matchId === matchId && n.type === 'message' ? { ...n, read: true } : n,
+        ),
       }))
     },
   }

@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { OnlineBadge } from './OnlineBadge'
 import { useApp } from '../context/AppContext'
 import type { Match } from '../lib/types'
 import { tPath } from '../i18n/translations'
@@ -28,6 +29,7 @@ export function MatchCard({ match }: { match: Match }) {
           </div>
           <div>
             <h3 className="text-lg font-bold">{p.name}</h3>
+            <OnlineBadge lastSeen={p.lastSeen} />
             <p className="text-sm text-ink/60">
               {q.age} · {tPath(lang, `region.${q.region}`)}
               {q.city ? ` · ${q.city}` : ''}
@@ -64,9 +66,10 @@ export function MatchCard({ match }: { match: Match }) {
         {match.status === 'partner_approved' && (
           <Link
             to={`/app/chat/${match.id}`}
-            className="block rounded-2xl bg-olive py-3 text-center text-sm font-bold text-paper"
+            className="relative block rounded-2xl bg-olive py-3 text-center text-sm font-bold text-paper"
           >
             {match.shareEmail || match.sharePhone ? `${t.chat} · ${t.contact}` : t.chat}
+            <UnreadDot matchId={match.id} />
           </Link>
         )}
         {match.status === 'declined' && (
@@ -135,5 +138,16 @@ function DemoApproveButton({ matchId }: { matchId: string }) {
     >
       {label}
     </button>
+  )
+}
+
+function UnreadDot({ matchId }: { matchId: string }) {
+  const { notifications } = useApp()
+  const n = notifications.filter((x) => x.type === 'message' && !x.read && x.matchId === matchId).length
+  if (!n) return null
+  return (
+    <span className="absolute -top-2 inline-flex min-w-5 rounded-full bg-wine px-1.5 text-[10px] font-bold leading-5 text-paper end-3">
+      {n}
+    </span>
   )
 }

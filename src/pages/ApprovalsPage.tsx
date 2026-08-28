@@ -2,28 +2,59 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { tPath } from '../i18n/translations'
+import { OnlineBadge } from '../components/OnlineBadge'
 import type { Match } from '../lib/types'
 
 export function ApprovalsPage() {
-  const { t, incoming } = useApp()
+  const { t, user, incoming, allMatches, messages, notifications } = useApp()
   const paid = incoming.filter((m) => m.status === 'selected_and_paid')
-  const done = incoming.filter((m) => m.status === 'partner_approved')
+  const conversations = allMatches.filter(
+    (m) =>
+      m.status === 'partner_approved' &&
+      user &&
+      (m.userId === user.id || m.candidateId === user.id),
+  )
 
-  if (incoming.length === 0) {
+  if (paid.length === 0 && conversations.length === 0) {
     return <p className="rounded-3xl bg-card p-8 text-ink/60">{t.emptyInbox}</p>
   }
 
+  const sortedChats = [...conversations].sort((a, b) => {
+    const la = lastMessage(messages, a.id)?.createdAt ?? a.approvedAt ?? a.createdAt
+    const lb = lastMessage(messages, b.id)?.createdAt ?? b.approvedAt ?? b.createdAt
+    return lb.localeCompare(la)
+  })
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <h1 className="display text-3xl">{t.approvals}</h1>
-      {paid.map((m) => (
-        <IncomingCard key={m.id} match={m} />
-      ))}
-      {done.map((m) => (
-        <ApprovedCard key={m.id} match={m} />
-      ))}
+      {paid.length > 0 && (
+        <section className="space-y-4">
+          {paid.map((m) => (
+            <IncomingCard key={m.id} match={m} />
+          ))}
+        </section>
+      )}
+      {sortedChats.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-bold">{t.conversations}</h2>
+          {sortedChats.map((m) => (
+            <ConversationCard
+              key={m.id}
+              match={m}
+              unread={notifications.filter((n) => n.type === 'message' && !n.read && n.matchId === m.id).length}
+            />
+          ))}
+        </section>
+      )}
     </div>
   )
+}
+
+function lastMessage(messages: { matchId: string; createdAt: string }[], matchId: string) {
+  return messages
+    .filter((m) => m.matchId === matchId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
 }
 
 function IncomingCard({ match }: { match: Match }) {
@@ -39,6 +70,7 @@ function IncomingCard({ match }: { match: Match }) {
     <article className="rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5">
       <p className="text-sm font-semibold text-gold">{t.incoming}</p>
       <h2 className="mt-1 text-xl font-bold">{p.name}</h2>
+      <OnlineBadge lastSeen={p.lastSeen} />
       <p className="text-sm text-ink/60">
         {p.questionnaire.age} · {tPath(lang, `region.${p.questionnaire.region}`)} ·{' '}
         {tPath(lang, `faith.${p.questionnaire.faith}`)}
@@ -94,31 +126,33 @@ function IncomingCard({ match }: { match: Match }) {
   )
 }
 
-function ApprovedCard({ match }: { match: Match }) {
-  const { t, profileById } = useApp()
-  const p = profileById(match.userId)
-  if (!p) return null
-  return (
-    <article className="rounded-[28px] bg-card p-5">
-      <p className="text-sm text-olive">{t.approved}</p>
-      <h2 className="text-xl font-bold">{p.name}</h2>
-      <SharedSummary match={match} />
-      <Link to={`/app/chat/${match.id}`} className="mt-3 inline-block font-semibold text-wine">
-        {t.chat}
-      </Link>
-    </article>
-  )
-}
+function ConversationCard({ match, unread }: { match: Match; unread: number }) {
+  const { t, user, profileById, messages } = useApp()
+  if (!user) return null
+  const other = profileById(match.userId === user.id ? match.candidateId : match.userId)
+  if (!other) return null
+  const last = messages
+    .filter((m) => m.matchId === match.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
 
-function SharedSummary({ match }: { match: Match }) {
-  const { t } = useApp()
-  const parts = [
-    match.sharePhone ? t.phoneReveal : null,
-    match.shareEmail ? t.emailReveal : null,
-  ].filter(Boolean)
   return (
-    <p className="mt-1 text-sm text-ink/60">
-      {parts.length > 0 ? `${t.youShared} ${parts.join(' · ')}` : t.chatOnlyHint}
-    </p>
+    <Link
+      to={`/app/chat/${match.id}`}
+      className="block rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm text-olive">{t.conversations}</p>
+          <h2 className="text-xl font-bold">{other.name}</h2>
+          <OnlineBadge lastSeen={other.lastSeen} />
+        </div>
+        {unread > 0 && (
+          <span className="rounded-full bg-wine px-2.5 py-1 text-xs font-bold text-paper">{unread}</span>
+        )}
+      </div>
+      <p className={`mt-2 text-sm ${unread > 0 ? 'font-semibold text-ink' : 'text-ink/55'}`}>
+        {last ? last.body : t.noMessagesYet}
+      </p>
+    </Link>
   )
 }

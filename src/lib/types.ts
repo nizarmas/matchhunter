@@ -55,6 +55,7 @@ export type Profile = {
   chatWarnings?: number
   chatBlocked?: boolean
   accountBlocked?: boolean
+  lastSeen?: string
   createdAt: string
 }
 

@@ -30,6 +30,7 @@ create table if not exists public.profiles (
   chat_blocked boolean default false,
   account_blocked boolean default false,
   is_admin boolean default false,
+  last_seen timestamptz,
   created_at timestamptz default now()
 );
 

@@ -1,11 +1,12 @@
-import { useMemo, useState, type FormEvent } from 'react'
-import { useParams } from 'react-router-dom'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
+import { OnlineBadge } from '../components/OnlineBadge'
 import { otherSharedContact } from '../lib/contact'
 
 export function ChatPage() {
   const { matchId } = useParams()
-  const { t, user, allMatches, messages, profileById, sendMessage } = useApp()
+  const { t, user, allMatches, messages, profileById, sendMessage, markMatchRead } = useApp()
   const [body, setBody] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -20,8 +21,19 @@ export function ChatPage() {
     [messages, matchId],
   )
 
+  useEffect(() => {
+    if (matchId) markMatchRead(matchId)
+  }, [matchId])
+
   if (!match || match.status !== 'partner_approved' || !other || !user) {
-    return <p className="text-ink/60">{t.waiting}</p>
+    return (
+      <div>
+        <Link to="/app/approvals" className="mb-4 inline-block text-sm font-semibold text-wine">
+          ← {t.backToInbox}
+        </Link>
+        <p className="text-ink/60">{t.waiting}</p>
+      </div>
+    )
   }
 
   const openId = match.id
@@ -42,7 +54,11 @@ export function ChatPage() {
   return (
     <div className="mx-auto flex min-h-[70dvh] max-w-xl flex-col rounded-[32px] bg-card shadow-sm ring-1 ring-ink/5">
       <header className="border-b border-mist px-5 py-4">
+        <Link to="/app/approvals" className="mb-2 inline-block text-sm font-semibold text-wine">
+          ← {t.backToInbox}
+        </Link>
         <h1 className="text-lg font-bold">{other.name}</h1>
+        <OnlineBadge lastSeen={other.lastSeen} />
         {revealed.phone || revealed.email ? (
           <div className="mt-1 space-y-0.5 text-sm text-ink/70">
             {revealed.phone ? (
