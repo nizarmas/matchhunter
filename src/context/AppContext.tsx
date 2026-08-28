@@ -83,15 +83,29 @@ function mergeMatchList(cloud: Match[], local: Match[]) {
   return [...map.values()].filter((m) => !m.candidateId.startsWith('seed-'))
 }
 
+function laterIso(a?: string, b?: string) {
+  if (!a) return b
+  if (!b) return a
+  return new Date(a).getTime() >= new Date(b).getTime() ? a : b
+}
+
 function mergeProfiles(cloud: Profile[], local: Profile[]) {
   const map = new Map<string, Profile>()
+  const localById = new Map(local.map((p) => [p.id, p]))
   for (const p of SEED_PROFILES) map.set(p.id, p)
-  for (const p of cloud) map.set(p.id, p)
+  for (const p of cloud) {
+    const loc = localById.get(p.id) ?? map.get(p.id)
+    map.set(p.id, { ...p, membershipUntil: laterIso(p.membershipUntil, loc?.membershipUntil) })
+  }
   const phones = new Set(cloud.map((p) => p.phone.replace(/\D/g, '')).filter((x) => x.length >= 9))
   const emails = new Set(cloud.map((p) => p.email?.toLowerCase()).filter((x): x is string => Boolean(x)))
   for (const p of local) {
     if (p.id.startsWith('seed-')) continue
-    if (map.has(p.id)) continue
+    const cur = map.get(p.id)
+    if (cur) {
+      map.set(p.id, { ...cur, membershipUntil: laterIso(cur.membershipUntil, p.membershipUntil) })
+      continue
+    }
     const ph = p.phone.replace(/\D/g, '')
     if (ph.length >= 9 && phones.has(ph)) continue
     if (p.email && emails.has(p.email.toLowerCase())) continue
@@ -276,12 +290,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     async function tick() {
       try {
-        const [cloudMatches, cloudNotes, cloudMsgs, lastSeen, cloudProfiles] = await Promise.all([
+        const [cloudMatches, cloudNotes, cloudMsgs, lastSeen, cloudProfiles, cloudTx] = await Promise.all([
           fetchCloudMatches(uid),
           fetchCloudNotifications(uid),
           fetchVisibleCloudMessages(),
           fetchLastSeenMap(),
           fetchCloudProfiles(),
+          fetchCloudTransactions(),
         ])
         patch((s) => {
           let matches = mergeMatchList(cloudMatches, s.matches)
@@ -311,13 +326,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             }
           }
+          const txMap = new Map(s.transactions.map((t) => [t.id, t]))
+          for (const t of cloudTx) txMap.set(t.id, t)
           const profiles = mergeProfiles(cloudProfiles, s.profiles).map((p) =>
             lastSeen.has(p.id) ? { ...p, lastSeen: lastSeen.get(p.id) } : p,
           )
+          const me = profiles.find((p) => p.id === uid)
+          const cloudMe = cloudProfiles.find((p) => p.id === uid)
+          if (
+            me?.membershipUntil &&
+            (!cloudMe?.membershipUntil ||
+              new Date(me.membershipUntil).getTime() > new Date(cloudMe.membershipUntil).getTime() + 1000)
+          ) {
+            void upsertCloudProfile(me)
+          }
           return {
             ...s,
             profiles,
             matches,
+            transactions: [...txMap.values()],
             notifications: [...noteMap.values()],
             messages: mergeChatMessages(s.messages, cloudMsgs),
           }

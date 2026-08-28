@@ -173,11 +173,12 @@ function WaitingCard({ match }: { match: Match }) {
   const { t, profileById } = useApp()
   const p = profileById(match.candidateId)
   return (
-    <article className="rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5">
+    <article className="rounded-[28px] bg-gold/10 p-5 shadow-sm ring-1 ring-gold/25">
       <p className="text-sm font-semibold text-gold">{t.waiting}</p>
       <h2 className="mt-1 text-xl font-bold">{p?.name ?? t.waiting}</h2>
       {p ? <OnlineBadge lastSeen={p.lastSeen} /> : null}
       <p className="mt-2 text-sm text-ink/60">{t.paidHint}</p>
+      <p className="mt-3 rounded-2xl bg-card/80 px-4 py-3 text-sm font-semibold text-ink/70">{t.waitingCannotEnter}</p>
     </article>
   )
 }
@@ -194,7 +195,7 @@ function ConversationCard({ match, unread, pairIds }: { match: Match; unread: nu
   return (
     <Link
       to={`/app/chat/${match.id}`}
-      className="block rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5"
+      className="block rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-olive/20"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -207,6 +208,7 @@ function ConversationCard({ match, unread, pairIds }: { match: Match; unread: nu
         )}
       </div>
       <p className={`mt-2 text-sm ${unread > 0 ? 'font-semibold text-ink' : 'text-ink/55'}`}>{preview}</p>
+      <span className="mt-4 block rounded-2xl bg-wine py-3 text-center font-bold text-paper">{t.enterChat}</span>
     </Link>
   )
 }

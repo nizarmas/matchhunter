@@ -4,7 +4,7 @@ import { useApp } from '../context/AppContext'
 import { OnlineBadge } from '../components/OnlineBadge'
 import { pairSharedContact } from '../lib/contact'
 import { threadMatchIds } from '../lib/chatLive'
-import { otherParty, pairMatchesForPerson, pickCanonicalMatch } from '../lib/pair'
+import { involvesPair, otherParty, pairMatchesForPerson, pickCanonicalMatch } from '../lib/pair'
 
 export function ChatPage() {
   const { matchId } = useParams()
@@ -19,8 +19,13 @@ export function ChatPage() {
   const otherId = opened && user ? otherParty(opened, user.id) : undefined
   const other = otherId ? profileById(otherId) : undefined
   const pair = user && other ? pairMatchesForPerson(allMatches, user.id, other, profileById) : []
+  const approved =
+    user && otherId
+      ? allMatches.find((m) => involvesPair(m, user.id, otherId) && m.status === 'partner_approved')
+      : undefined
   const match =
-    user && otherId ? pickCanonicalMatch(allMatches, user.id, otherId, messages) ?? opened : opened
+    approved ??
+    (user && otherId ? pickCanonicalMatch(allMatches, user.id, otherId, messages) ?? opened : opened)
   const threadIds = useMemo(() => {
     if (!user) return new Set<string>()
     if (other) return threadMatchIds(allMatches, messages, user.id, other, profileById)
@@ -114,7 +119,8 @@ export function ChatPage() {
         <Link to="/app/approvals" className="mb-4 inline-block text-sm font-semibold text-wine">
           ← {t.backToInbox}
         </Link>
-        <p className="text-ink/60">{t.waiting}</p>
+        <h1 className="mt-2 text-2xl font-bold">{other?.name ?? t.waiting}</h1>
+        <p className="mt-2 text-ink/60">{t.waitingCannotEnter}</p>
       </div>
     )
   }
@@ -168,7 +174,7 @@ export function ChatPage() {
         )}
       </header>
       <div ref={scroller} className="flex-1 space-y-2 overflow-y-auto p-4">
-        {thread.length === 0 && <p className="text-sm text-ink/45">{t.paidHint}</p>}
+        {thread.length === 0 && <p className="text-sm text-ink/45">{t.noMessagesYet}</p>}
         {thread.map((m) => (
           <div
             key={m.id}

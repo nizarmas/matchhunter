@@ -8,9 +8,9 @@ import { supabase } from '../lib/supabase'
 export function UnlockPage() {
   const { matchId } = useParams()
   const [params] = useSearchParams()
-  const { t, lang, matches, profileById, payForMatch, sendRequest, hasMembership } = useApp()
+  const { t, lang, allMatches, profileById, payForMatch, sendRequest, hasMembership } = useApp()
   const nav = useNavigate()
-  const match = matches.find((m) => m.id === matchId)
+  const match = allMatches.find((m) => m.id === matchId)
   const p = match ? profileById(match.candidateId) : undefined
   const [stripeBusy, setStripeBusy] = useState(false)
 
