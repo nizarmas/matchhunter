@@ -1,17 +1,45 @@
-import { useNavigate, useParams } from 'react-router-dom'
-import { PayPalUnlock } from '../components/PayPalUnlock'
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Checkout } from '../components/Checkout'
 import { useApp } from '../context/AppContext'
 import { tPath } from '../i18n/translations'
+import { supabase } from '../lib/supabase'
 
 export function UnlockPage() {
   const { matchId } = useParams()
+  const [params] = useSearchParams()
   const { t, lang, matches, profileById, payForMatch, sendRequest, hasMembership } = useApp()
   const nav = useNavigate()
   const match = matches.find((m) => m.id === matchId)
   const p = match ? profileById(match.candidateId) : undefined
+  const [stripeBusy, setStripeBusy] = useState(false)
+
+  const sessionId = params.get('session_id')
+
+  useEffect(() => {
+    if (!sessionId || !matchId || !supabase) return
+    let dead = false
+    setStripeBusy(true)
+    void supabase.functions.invoke('confirm-stripe-session', { body: { sessionId } }).then(({ data, error }) => {
+      if (dead) return
+      setStripeBusy(false)
+      if (error || !data?.paid) return
+      payForMatch(matchId, sessionId, 'stripe')
+      nav('/app', { replace: true })
+    })
+    return () => {
+      dead = true
+    }
+    // payForMatch is recreated each render; confirm once per session id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, matchId])
 
   if (!match || !p) {
     return <p className="text-ink/60">{t.noMatches}</p>
+  }
+
+  if (stripeBusy) {
+    return <p className="text-ink/60">{t.paying}</p>
   }
 
   if (match.status !== 'pending') {
@@ -59,7 +87,7 @@ export function UnlockPage() {
       </p>
       <p className="mt-4 text-sm leading-relaxed text-ink/70">{t.unlockExplain}</p>
       <div className="mt-6">
-        <PayPalUnlock
+        <Checkout
           matchId={match.id}
           onPaid={(id, gateway) => {
             payForMatch(match.id, id, gateway)

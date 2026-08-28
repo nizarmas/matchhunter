@@ -9,17 +9,17 @@ import {
   insertCloudMessage,
   insertCloudNotification,
   insertCloudTransaction,
-  isUuid,
   markCloudNotificationsRead,
   upsertCloudMatches,
   upsertCloudProfile,
 } from '../lib/db'
-import { fetchIsCurrentUserAdmin, setCloudAdminEmail } from '../lib/admin'
+import { fetchIsCurrentUserAdmin, fetchPaymentSettings, setCloudAdminEmail, setCloudPaymentSettings, cloudDeleteCustomer, cloudRevokeMembership, cloudResetAllMemberships } from '../lib/admin'
 import { addMembershipPeriod, isMemberActive, MEMBER_PRICE_ILS } from '../lib/membership'
 import { isOffensive } from '../lib/moderation'
+import { DEFAULT_PAYMENT_SETTINGS, type PaymentSettings } from '../lib/payments'
 import { curateMatches } from '../lib/matching'
 import { SEED_PROFILES } from '../lib/seed'
-import { loadStore, rememberEmail, saveStore, type Store } from '../lib/store'
+import { holdInbox, isInboxHeld, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import type {
   AppNotification,
@@ -96,11 +96,16 @@ type AppCtx = {
   decideIncoming: (matchId: string, approve: boolean) => void
   sendMessage: (matchId: string, body: string) => 'ok' | 'warned' | 'blocked'
   isAdmin: boolean
+  paymentSettings: PaymentSettings
   transactions: Transaction[]
   adminSetBlocked: (profileId: string, blocked: boolean) => void
   adminGrantPaid: (profileId: string) => void
   adminMessage: (profileId: string, body: string) => void
   adminChangeEmail: (nextEmail: string) => Promise<void>
+  adminSavePayments: (next: PaymentSettings) => Promise<void>
+  adminDeleteCustomer: (profileId: string) => Promise<void>
+  adminRevokeMembership: (profileId: string) => Promise<void>
+  adminResetAllMemberships: () => Promise<void>
   markNotificationsRead: () => void
 }
 
@@ -114,6 +119,7 @@ function applyDoc(lang: Lang) {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [store, setStore] = useState<Store>(() => loadStore())
   const [isAdmin, setIsAdmin] = useState(false)
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(DEFAULT_PAYMENT_SETTINGS)
 
   useEffect(() => {
     applyDoc(store.lang)
@@ -132,6 +138,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       admin = false
     }
     setIsAdmin(admin)
+    try {
+      setPaymentSettings(await fetchPaymentSettings())
+    } catch {
+      setPaymentSettings(DEFAULT_PAYMENT_SETTINGS)
+    }
 
     try {
       const cloudProfiles = await fetchCloudProfiles()
@@ -149,16 +160,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ])
       patch((s) => {
         const profiles = mergeProfiles(cloudProfiles, s.profiles)
-        const seedMatches = s.matches.filter((m) => !isUuid(m.candidateId) || !isUuid(m.id))
-        const merged = [...seedMatches.filter((m) => m.userId === userId || m.candidateId === userId), ...cloudMatches]
-        const unique = new Map(merged.map((m) => [m.id, m]))
-        const me = profiles.find((p) => p.id === userId)
-        let matches = [...unique.values()]
-        if (me?.onboardingComplete) {
-          const mine = matches.filter((m) => m.userId === me.id)
-          const others = matches.filter((m) => m.userId !== me.id)
-          matches = [...others, ...curateMatches(me, profiles, mine)]
-        }
+        const unique = new Map(cloudMatches.map((m) => [m.id, m]))
+        const matches = isInboxHeld() ? [] : [...unique.values()].filter((m) => !m.candidateId.startsWith('seed-'))
         const txMap = new Map(s.transactions.map((t) => [t.id, t]))
         for (const t of cloudTx) txMap.set(t.id, t)
         const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
@@ -201,7 +204,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const matches = useMemo(
     () =>
       store.matches
-        .filter((m) => m.userId === store.currentUserId && m.status !== 'declined')
+        .filter((m) => m.userId === store.currentUserId && m.status !== 'declined' && !m.candidateId.startsWith('seed-'))
         .slice(0, 4),
     [store.matches, store.currentUserId],
   )
@@ -233,6 +236,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     t: translations[store.lang] as Dict,
     cloud: isSupabaseConfigured,
     isAdmin,
+    paymentSettings,
     transactions: store.transactions,
     user,
     profiles: store.profiles,
@@ -275,15 +279,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const existing = store.profiles.find((p) => p.phone.replace(/\D/g, '') === phone.replace(/\D/g, ''))
       if (existing) {
-        patch((s) => {
-          let nextMatches = s.matches
-          if (existing.onboardingComplete) {
-            const mine = s.matches.filter((m) => m.userId === existing.id)
-            const others = s.matches.filter((m) => m.userId !== existing.id)
-            nextMatches = [...others, ...curateMatches(existing, s.profiles, mine)]
-          }
-          return { ...s, currentUserId: existing.id, matches: nextMatches }
-        })
+        patch((s) => ({ ...s, currentUserId: existing.id }))
         return existing
       }
       const profile: Profile = {
@@ -329,9 +325,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       rememberEmail(email)
       patch((s) => {
         if (!found.onboardingComplete) return { ...s, currentUserId: found.id }
-        const mine = s.matches.filter((m) => m.userId === found.id)
-        const others = s.matches.filter((m) => m.userId !== found.id)
-        return { ...s, currentUserId: found.id, matches: [...others, ...curateMatches(found, s.profiles, mine)] }
+        return { ...s, currentUserId: found.id }
       })
       return found
     },
@@ -345,22 +339,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const updated: Profile = { ...user, questionnaire: q, onboardingComplete: true }
       patch((s) => {
         const profiles = s.profiles.map((p) => (p.id === user.id ? updated : p))
+        void upsertCloudProfile(updated)
+        if (isInboxHeld()) return { ...s, profiles }
         const me = profiles.find((p) => p.id === user.id)!
         const mine = s.matches.filter((m) => m.userId === me.id)
         const others = s.matches.filter((m) => m.userId !== me.id)
         const curated = curateMatches(me, profiles, mine)
-        void upsertCloudProfile(updated)
         void upsertCloudMatches(curated)
         return { ...s, profiles, matches: [...others, ...curated] }
       })
     },
     refreshMatches: () => {
       if (!user) return
+      releaseInbox()
       patch((s) => {
         const me = s.profiles.find((p) => p.id === user.id)
         if (!me) return s
-        const mine = s.matches.filter((m) => m.userId === me.id)
-        const others = s.matches.filter((m) => m.userId !== me.id)
+        const mine = s.matches.filter((m) => m.userId === me.id && !m.candidateId.startsWith('seed-'))
+        const others = s.matches.filter((m) => m.userId !== me.id && !m.candidateId.startsWith('seed-'))
         const curated = curateMatches(me, s.profiles, mine)
         void upsertCloudMatches(curated)
         return { ...s, matches: [...others, ...curated] }
@@ -407,6 +403,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     payForMatch: (matchId, gatewayId, gateway) => {
       if (!user) return
+      if (paymentSettings.mode === 'live' && gateway === 'demo') return
+      if (store.transactions.some((tx) => tx.paymentGatewayId === gatewayId && tx.status === 'success')) return
       const until = addMembershipPeriod(user.membershipUntil)
       const updated: Profile = { ...user, membershipUntil: until }
       const tx: Transaction = {
@@ -566,6 +564,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!user || !isAdmin) throw new Error('not_admin')
       await setCloudAdminEmail(nextEmail)
       setIsAdmin(await fetchIsCurrentUserAdmin())
+    },
+    adminSavePayments: async (next) => {
+      if (!user || !isAdmin) throw new Error('not_admin')
+      await setCloudPaymentSettings(next)
+      setPaymentSettings(next)
+    },
+    adminRevokeMembership: async (profileId) => {
+      if (!user || !isAdmin) return
+      await cloudRevokeMembership(profileId)
+      patch((s) => ({
+        ...s,
+        profiles: s.profiles.map((p) => (p.id === profileId ? { ...p, membershipUntil: undefined } : p)),
+        transactions: s.transactions.filter((tx) => tx.userId !== profileId),
+        matches: s.matches.map((m) =>
+          m.userId === profileId && (m.status === 'selected_and_paid' || m.status === 'partner_approved')
+            ? { ...m, status: 'pending' as const, paidAt: undefined, approvedAt: undefined }
+            : m,
+        ),
+      }))
+    },
+    adminDeleteCustomer: async (profileId) => {
+      if (!user || !isAdmin || profileId === user.id) throw new Error('cannot_delete_self')
+      await cloudDeleteCustomer(profileId)
+      patch((s) => {
+        const matches = s.matches.filter((m) => m.userId !== profileId && m.candidateId !== profileId)
+        const matchIds = new Set(matches.map((m) => m.id))
+        return {
+          ...s,
+          profiles: s.profiles.filter((p) => p.id !== profileId),
+          transactions: s.transactions.filter((tx) => tx.userId !== profileId),
+          notifications: s.notifications.filter((n) => n.userId !== profileId),
+          matches,
+          messages: s.messages.filter((msg) => matchIds.has(msg.matchId)),
+        }
+      })
+    },
+    adminResetAllMemberships: async () => {
+      if (!user || !isAdmin) throw new Error('not_admin')
+      holdInbox()
+      patch((s) => ({
+        ...s,
+        profiles: s.profiles.map((p) => ({ ...p, membershipUntil: undefined })),
+        transactions: [],
+        matches: [],
+        messages: [],
+      }))
+      await cloudResetAllMemberships()
     },
     markNotificationsRead: () => {
       if (!user) return

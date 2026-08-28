@@ -102,7 +102,7 @@ export function curateMatches(me: Profile, pool: Profile[], existing: Match[]): 
   const mine = existing.filter((m) => m.userId === me.id)
   const taken = new Set(mine.map((m) => m.candidateId))
   const scored = pool
-    .filter((p) => !isSamePerson(me, p) && p.onboardingComplete)
+    .filter((p) => !p.id.startsWith('seed-') && !isSamePerson(me, p) && p.onboardingComplete)
     .map((p) => ({ p, ...scoreMatch(me.questionnaire, p) }))
     .sort((a, b) => b.score - a.score)
 

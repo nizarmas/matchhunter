@@ -12,6 +12,11 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      workbox: {
+        cacheId: 'matchhunter-v3',
+        skipWaiting: true,
+        clientsClaim: true,
+      },
       includeAssets: ['favicon.svg'],
       manifest: {
         name: 'MatchHunter',

@@ -1,7 +1,11 @@
 import { SEED_PROFILES } from './seed'
 import type { AppNotification, ChatMessage, Lang, Match, Profile, Transaction } from './types'
 
-const KEY = 'matchhunter.v2'
+const KEY = 'matchhunter.v3'
+const OLD_KEY = 'matchhunter.v2'
+const HOLD_INBOX = 'matchhunter.hold-inbox'
+const MIGRATED = 'matchhunter.migrated-v3'
+const EMAIL_KEY = 'matchhunter.lastEmail'
 
 export type Store = {
   lang: Lang
@@ -25,18 +29,45 @@ function empty(): Store {
   }
 }
 
+function withSeeds(parsed: Store): Store {
+  const seedIds = new Set(SEED_PROFILES.map((p) => p.id))
+  const custom = parsed.profiles.filter((p) => !seedIds.has(p.id))
+  return {
+    ...empty(),
+    ...parsed,
+    profiles: [...SEED_PROFILES, ...custom],
+  }
+}
+
+export function isInboxHeld() {
+  return localStorage.getItem(HOLD_INBOX) === '1'
+}
+
+export function holdInbox() {
+  localStorage.setItem(HOLD_INBOX, '1')
+}
+
+export function releaseInbox() {
+  localStorage.removeItem(HOLD_INBOX)
+}
+
 export function loadStore(): Store {
   try {
+    localStorage.removeItem(OLD_KEY)
+
+    if (!localStorage.getItem(MIGRATED)) {
+      localStorage.setItem(MIGRATED, '1')
+      holdInbox()
+      const raw = localStorage.getItem(KEY)
+      if (!raw) return empty()
+      return { ...withSeeds(JSON.parse(raw) as Store), matches: [], messages: [], transactions: [] }
+    }
+
     const raw = localStorage.getItem(KEY)
     if (!raw) return empty()
-    const parsed = JSON.parse(raw) as Store
-    const seedIds = new Set(SEED_PROFILES.map((p) => p.id))
-    const custom = parsed.profiles.filter((p) => !seedIds.has(p.id))
-    return {
-      ...empty(),
-      ...parsed,
-      profiles: [...SEED_PROFILES, ...custom],
-    }
+    const next = withSeeds(JSON.parse(raw) as Store)
+    if (isInboxHeld()) return { ...next, matches: [] }
+    return next
   } catch {
     return empty()
   }
@@ -45,8 +76,6 @@ export function loadStore(): Store {
 export function saveStore(store: Store) {
   localStorage.setItem(KEY, JSON.stringify(store))
 }
-
-const EMAIL_KEY = 'matchhunter.lastEmail'
 
 export function rememberEmail(email: string) {
   if (email) localStorage.setItem(EMAIL_KEY, email.trim().toLowerCase())

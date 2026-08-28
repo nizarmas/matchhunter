@@ -98,4 +98,3 @@ create policy "notifications_admin_insert" on public.notifications
 drop policy if exists "matches_admin_select" on public.matches;
 create policy "matches_admin_select" on public.matches
   for select to authenticated using (public.is_admin());
-,gkv t, vt,r

@@ -1,7 +1,8 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { isMemberActive, MEMBER_MONTHS, MEMBER_PRICE_ILS } from '../lib/membership'
+import type { PaymentSettings } from '../lib/payments'
 import { SEED_PROFILES } from '../lib/seed'
 
 export function AdminPage() {
@@ -16,6 +17,11 @@ export function AdminPage() {
     adminGrantPaid,
     adminMessage,
     adminChangeEmail,
+    paymentSettings,
+    adminSavePayments,
+    adminDeleteCustomer,
+    adminRevokeMembership,
+    adminResetAllMemberships,
   } = useApp()
   const [q, setQ] = useState('')
   const [draft, setDraft] = useState<Record<string, string>>({})
@@ -24,6 +30,12 @@ export function AdminPage() {
   const [confirmEmail, setConfirmEmail] = useState('')
   const [emailError, setEmailError] = useState('')
   const [emailBusy, setEmailBusy] = useState(false)
+  const [payDraft, setPayDraft] = useState<PaymentSettings>(paymentSettings)
+  const [payBusy, setPayBusy] = useState(false)
+
+  useEffect(() => {
+    setPayDraft(paymentSettings)
+  }, [paymentSettings])
 
   const customers = useMemo(
     () =>
@@ -91,6 +103,19 @@ export function AdminPage() {
     }
   }
 
+  async function savePayments(e: FormEvent) {
+    e.preventDefault()
+    setPayBusy(true)
+    try {
+      await adminSavePayments(payDraft)
+      setFlash(t.paySettingsSaved)
+    } catch {
+      setFlash(t.authError)
+    } finally {
+      setPayBusy(false)
+    }
+  }
+
   const stats = [
     { k: t.statsUsers, v: String(customers.length) },
     { k: t.statsMonth, v: String(joinedMonth) },
@@ -103,7 +128,23 @@ export function AdminPage() {
   return (
     <div>
       <h1 className="display text-3xl md:text-4xl">{t.adminTitle}</h1>
-      {flash && <p className="mt-3 text-sm font-semibold text-olive">{flash}</p>}
+      {flash && (
+        <p className={`mt-3 text-sm font-semibold ${flash === t.resetAllMembershipsDone ? 'text-olive' : 'text-wine'}`}>
+          {flash}
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          if (!window.confirm(t.resetAllMembershipsConfirm)) return
+          void adminResetAllMemberships()
+            .then(() => setFlash(t.resetAllMembershipsDone))
+            .catch((err) => setFlash(err instanceof Error ? err.message : t.authError))
+        }}
+        className="mt-4 rounded-2xl bg-wine px-4 py-3 text-sm font-bold text-paper"
+      >
+        {t.resetAllMemberships}
+      </button>
       <form onSubmit={saveAdminEmail} className="mt-6 rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5">
         <h2 className="text-lg font-bold">{t.adminEmailTitle}</h2>
         <p className="mt-1 text-sm text-ink/60">{t.adminEmailHint}</p>
@@ -137,6 +178,62 @@ export function AdminPage() {
           {t.adminEmailSave}
         </button>
       </form>
+      <form onSubmit={savePayments} className="mt-6 rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5">
+        <h2 className="text-lg font-bold">{t.payModeTitle}</h2>
+        <p className="mt-1 text-sm text-ink/60">{t.payModeHint}</p>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setPayDraft((d) => ({ ...d, mode: 'simulation' }))}
+            className={`rounded-2xl px-4 py-3 text-sm font-bold ${
+              payDraft.mode === 'simulation' ? 'bg-gold text-ink' : 'bg-mist'
+            }`}
+          >
+            {t.payModeSim}
+          </button>
+          <button
+            type="button"
+            onClick={() => setPayDraft((d) => ({ ...d, mode: 'live' }))}
+            className={`rounded-2xl px-4 py-3 text-sm font-bold ${
+              payDraft.mode === 'live' ? 'bg-olive text-paper' : 'bg-mist'
+            }`}
+          >
+            {t.payModeLive}
+          </button>
+        </div>
+        <label className="mt-4 block text-xs text-ink/50">{t.paypalAccount}</label>
+        <input
+          type="email"
+          required
+          value={payDraft.paypalEmail}
+          onChange={(e) => setPayDraft((d) => ({ ...d, paypalEmail: e.target.value }))}
+          className="mt-1 w-full rounded-2xl border border-mist bg-paper px-4 py-3 outline-none ring-wine focus:ring-2"
+        />
+        <label className="mt-3 block text-xs text-ink/50">{t.paypalClientId}</label>
+        <input
+          value={payDraft.paypalClientId}
+          onChange={(e) => setPayDraft((d) => ({ ...d, paypalClientId: e.target.value }))}
+          placeholder="AY..."
+          className="mt-1 w-full rounded-2xl border border-mist bg-paper px-4 py-3 outline-none ring-wine focus:ring-2"
+        />
+        <label className="mt-3 block text-xs text-ink/50">{t.stripePk}</label>
+        <input
+          value={payDraft.stripePublishableKey}
+          onChange={(e) => setPayDraft((d) => ({ ...d, stripePublishableKey: e.target.value }))}
+          placeholder="pk_live_... / pk_test_..."
+          className="mt-1 w-full rounded-2xl border border-mist bg-paper px-4 py-3 outline-none ring-wine focus:ring-2"
+        />
+        {payDraft.mode === 'live' && !payDraft.paypalClientId.trim() && (
+          <p className="mt-3 text-sm text-wine">{t.payLiveNeedKeys}</p>
+        )}
+        <button
+          type="submit"
+          disabled={payBusy}
+          className="mt-4 rounded-2xl bg-wine px-4 py-2 text-sm font-bold text-paper disabled:opacity-60"
+        >
+          {t.paySettingsSave}
+        </button>
+      </form>
       <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3">
         {stats.map((s) => (
           <div key={s.k} className="rounded-3xl bg-card p-4 shadow-sm ring-1 ring-ink/5">
@@ -166,36 +263,59 @@ export function AdminPage() {
             const member = isMemberActive(p.membershipUntil, last?.createdAt)
             return (
               <article key={p.id} className="rounded-[28px] bg-card p-5 shadow-sm ring-1 ring-ink/5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-bold">{p.name}</h3>
-                    <p className="text-sm text-ink/60">
-                      {p.email ?? '—'} · {p.phone || '—'} · {p.questionnaire.age}
-                    </p>
-                    <p className="mt-1 text-xs">
-                      {p.accountBlocked ? t.blockUser : member ? t.memberActive : t.unlockFor}
-                      {p.membershipUntil
-                        ? ` · ${new Date(p.membershipUntil).toLocaleDateString('he-IL')}`
-                        : ''}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => adminGrantPaid(p.id)}
-                      className="rounded-full bg-olive px-3 py-1.5 text-xs font-bold text-paper"
-                    >
-                      {t.grantPaid}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adminSetBlocked(p.id, !p.accountBlocked)}
-                      className="rounded-full bg-mist px-3 py-1.5 text-xs font-bold"
-                    >
-                      {p.accountBlocked ? t.unblockUser : t.blockUser}
-                    </button>
-                  </div>
+                <div>
+                  <h3 className="text-lg font-bold">{p.name}</h3>
+                  <p className="text-sm text-ink/60">
+                    {p.email ?? '—'} · {p.phone || '—'} · {p.questionnaire.age}
+                  </p>
+                  <p className="mt-1 text-xs">
+                    {p.accountBlocked ? t.blockUser : member ? t.memberActive : t.unlockFor}
+                    {p.membershipUntil
+                      ? ` · ${new Date(p.membershipUntil).toLocaleDateString('he-IL')}`
+                      : ''}
+                  </p>
                 </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => adminGrantPaid(p.id)}
+                    className="rounded-full bg-olive px-3 py-1.5 text-xs font-bold text-paper"
+                  >
+                    {t.grantPaid}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void adminRevokeMembership(p.id)
+                        .then(() => setFlash(t.membershipRevoked))
+                        .catch(() => setFlash(t.authError))
+                    }}
+                    className="rounded-full bg-mist px-3 py-1.5 text-xs font-bold"
+                  >
+                    {t.revokePaid}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => adminSetBlocked(p.id, !p.accountBlocked)}
+                    className="rounded-full bg-mist px-3 py-1.5 text-xs font-bold"
+                  >
+                    {p.accountBlocked ? t.unblockUser : t.blockUser}
+                  </button>
+                </div>
+                {p.id !== user.id && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!window.confirm(`${t.deleteCustomerConfirm} (${p.name})`)) return
+                      void adminDeleteCustomer(p.id)
+                        .then(() => setFlash(t.customerDeleted))
+                        .catch(() => setFlash(t.authError))
+                    }}
+                    className="mt-3 w-full rounded-2xl bg-wine py-2.5 text-sm font-bold text-paper"
+                  >
+                    {t.deleteCustomer}
+                  </button>
+                )}
                 <div className="mt-3 flex gap-2">
                   <input
                     value={draft[p.id] ?? ''}

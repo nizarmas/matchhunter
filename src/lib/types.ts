@@ -76,7 +76,7 @@ export type Transaction = {
   matchId?: string
   amount: number
   currency: 'ILS'
-  gateway: 'paypal' | 'demo' | 'admin'
+  gateway: 'paypal' | 'stripe' | 'demo' | 'admin'
   paymentGatewayId: string
   status: 'success' | 'failed' | 'pending'
   createdAt: string
