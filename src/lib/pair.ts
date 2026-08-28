@@ -44,16 +44,14 @@ export function pairMatchesForPerson(
   })
 }
 
-export function pickCanonicalMatch(matches: Match[], me: string, other: string, messages: ChatMessage[] = []) {
+export function pickCanonicalMatch(matches: Match[], me: string, other: string, _messages: ChatMessage[] = []) {
+  void _messages
   const pair = pairMatches(matches, me, other).filter((m) => m.status !== 'declined')
   if (pair.length === 0) return undefined
-  const counts = (id: string) => messages.filter((x) => x.matchId === id).length
   return [...pair].sort((a, b) => {
     const rs = (rank[b.status] ?? 0) - (rank[a.status] ?? 0)
     if (rs) return rs
-    const mc = counts(b.id) - counts(a.id)
-    if (mc) return mc
-    return (b.approvedAt ?? b.createdAt).localeCompare(a.approvedAt ?? a.createdAt)
+    return a.id.localeCompare(b.id)
   })[0]
 }
 

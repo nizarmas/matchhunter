@@ -279,13 +279,13 @@ export async function insertCloudTransaction(tx: Transaction) {
   })
 }
 
-export async function insertCloudMessage(msg: ChatMessage): Promise<'rpc' | 'row'> {
+export async function insertCloudMessage(msg: ChatMessage): Promise<{ via: 'rpc' | 'row'; id: string }> {
   if (!supabase || !isUuid(msg.matchId)) throw new Error('no_cloud')
   const rpc = await supabase.rpc('send_chat_message', {
     p_match_id: msg.matchId,
     p_body: msg.body,
   })
-  if (!rpc.error) return 'rpc'
+  if (!rpc.error && rpc.data) return { via: 'rpc', id: String(rpc.data) }
   const { error } = await supabase.from('messages').insert({
     id: msg.id,
     match_id: msg.matchId,
@@ -293,7 +293,7 @@ export async function insertCloudMessage(msg: ChatMessage): Promise<'rpc' | 'row
     body: msg.body,
   })
   if (error) throw error
-  return 'row'
+  return { via: 'row', id: msg.id }
 }
 
 export async function insertCloudNotification(userId: string, matchId: string | undefined, type: string, body: string) {

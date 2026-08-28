@@ -115,4 +115,14 @@ exception
   when duplicate_object then null;
 end $$;
 
+do $$
+begin
+  execute 'alter publication supabase_realtime add table public.notifications';
+exception
+  when duplicate_object then null;
+end $$;
+
+alter table public.messages replica identity full;
+alter table public.notifications replica identity full;
+
 notify pgrst, 'reload schema';

@@ -1,34 +1,45 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { OnlineBadge } from '../components/OnlineBadge'
 import { pairSharedContact } from '../lib/contact'
+import { threadMatchIds } from '../lib/chatLive'
 import { otherParty, pairMatchesForPerson, pickCanonicalMatch } from '../lib/pair'
 
 export function ChatPage() {
   const { matchId } = useParams()
   const nav = useNavigate()
-  const { t, user, allMatches, messages, profileById, sendMessage, markMatchRead } = useApp()
+  const { t, user, allMatches, messages, notifications, profileById, sendMessage, markMatchRead, setOpenChat } =
+    useApp()
   const [body, setBody] = useState('')
   const [notice, setNotice] = useState('')
+  const scroller = useRef<HTMLDivElement>(null)
 
   const opened = allMatches.find((m) => m.id === matchId)
   const otherId = opened && user ? otherParty(opened, user.id) : undefined
   const other = otherId ? profileById(otherId) : undefined
-  const pair =
-    user && other ? pairMatchesForPerson(allMatches, user.id, other, profileById) : []
+  const pair = user && other ? pairMatchesForPerson(allMatches, user.id, other, profileById) : []
   const match =
     user && otherId ? pickCanonicalMatch(allMatches, user.id, otherId, messages) ?? opened : opened
-  const pairKey = pair.map((m) => m.id).join('|')
-  const pairIds = useMemo(() => (pairKey ? pairKey.split('|') : []), [pairKey])
+  const threadIds = useMemo(() => {
+    if (!user || !other) return new Set<string>()
+    return threadMatchIds(allMatches, messages, user.id, other, profileById)
+  }, [allMatches, messages, user, other, profileById])
+  const threadKey = [...threadIds].sort().join('|')
+  const unreadHere = notifications.filter((n) => n.type === 'message' && !n.read && n.matchId && threadIds.has(n.matchId)).length
 
   const thread = useMemo(
     () =>
       messages
-        .filter((m) => pairIds.includes(m.matchId))
+        .filter((m) => threadIds.has(m.matchId) || (other && m.senderId === other.id))
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    [messages, pairIds],
+    [messages, threadIds, other],
   )
+
+  useEffect(() => {
+    setOpenChat(otherId ?? null)
+    return () => setOpenChat(null)
+  }, [otherId, setOpenChat])
 
   useEffect(() => {
     if (match && matchId && match.id !== matchId && match.status === 'partner_approved') {
@@ -37,8 +48,14 @@ export function ChatPage() {
   }, [match, matchId, nav])
 
   useEffect(() => {
-    for (const id of pairIds) markMatchRead(id)
-  }, [pairIds.join('|')])
+    for (const id of threadIds) markMatchRead(id)
+  }, [threadKey, unreadHere])
+
+  useEffect(() => {
+    const el = scroller.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [thread.at(-1)?.id])
 
   if (!match || match.status !== 'partner_approved' || !other || !user) {
     return (
@@ -97,7 +114,7 @@ export function ChatPage() {
           <p className="text-sm text-ink/55">{t.contactHidden}</p>
         )}
       </header>
-      <div className="flex-1 space-y-2 overflow-y-auto p-4">
+      <div ref={scroller} className="flex-1 space-y-2 overflow-y-auto p-4">
         {thread.length === 0 && <p className="text-sm text-ink/45">{t.paidHint}</p>}
         {thread.map((m) => (
           <div

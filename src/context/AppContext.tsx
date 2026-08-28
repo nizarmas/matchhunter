@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   fetchCloudMatches,
   fetchCloudMatchesAll,
@@ -22,6 +22,7 @@ import { addMembershipPeriod, isMemberActive, MEMBER_PRICE_ILS } from '../lib/me
 import { isOffensive } from '../lib/moderation'
 import { DEFAULT_PAYMENT_SETTINGS, type PaymentSettings } from '../lib/payments'
 import { curateMatches } from '../lib/matching'
+import { mergeChatMessages, messageFromRow, pairChannelName } from '../lib/chatLive'
 import { chattingIds, engagedIds, otherParty, overlapsKnown, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
 import { SEED_PROFILES } from '../lib/seed'
 import { holdInbox, isInboxHeld, isLiveMatch, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
@@ -138,6 +139,7 @@ type AppCtx = {
   adminResetAllMemberships: () => Promise<void>
   markNotificationsRead: () => void
   markMatchRead: (matchId: string) => void
+  setOpenChat: (otherId: string | null) => void
   inboxBadge: number
 }
 
@@ -152,6 +154,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [store, setStore] = useState<Store>(() => loadStore())
   const [isAdmin, setIsAdmin] = useState(false)
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(DEFAULT_PAYMENT_SETTINGS)
+  const [openChatOtherId, setOpenChat] = useState<string | null>(null)
+  const openChatRef = useRef<string | null>(null)
+  openChatRef.current = openChatOtherId
+  const pairChannelsRef = useRef(new Map<string, ReturnType<NonNullable<typeof supabase>['channel']>>())
 
   useEffect(() => {
     applyDoc(store.lang)
@@ -199,15 +205,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         for (const t of cloudTx) txMap.set(t.id, t)
         const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
         for (const n of cloudNotes) noteMap.set(n.id, n)
-        const msgMap = new Map(s.messages.map((m) => [m.id, m]))
-        for (const m of cloudMsgs) msgMap.set(m.id, m)
         return {
           ...s,
           profiles,
           matches,
           transactions: [...txMap.values()],
           notifications: [...noteMap.values()],
-          messages: [...msgMap.values()],
+          messages: mergeChatMessages(s.messages, cloudMsgs),
           currentUserId: userId,
         }
       })
@@ -235,10 +239,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const chatPartnersKey = store.currentUserId
+    ? [...chattingIds(store.matches, store.currentUserId)].sort().join('|')
+    : ''
+
   useEffect(() => {
     if (!supabase || !store.currentUserId) return
     const client = supabase
     const uid = store.currentUserId
+    const partners = chatPartnersKey ? chatPartnersKey.split('|') : []
+
+    function ingest(msgs: ChatMessage[]) {
+      if (msgs.length === 0) return
+      patch((s) => {
+        const messages = mergeChatMessages(s.messages, msgs)
+        const other = openChatRef.current
+        if (!other) return messages === s.messages ? s : { ...s, messages }
+        const openIds = new Set(
+          s.matches
+            .filter((m) => m.userId === uid || m.candidateId === uid)
+            .filter((m) => otherParty(m, uid) === other)
+            .map((m) => m.id),
+        )
+        for (const msg of msgs) {
+          if (msg.senderId === other) openIds.add(msg.matchId)
+        }
+        const notifications = s.notifications.map((n) =>
+          n.userId === uid && n.type === 'message' && n.matchId && openIds.has(n.matchId)
+            ? { ...n, read: true }
+            : n,
+        )
+        for (const id of openIds) void markCloudMatchMessagesRead(uid, id)
+        return { ...s, messages, notifications }
+      })
+    }
+
     async function tick() {
       try {
         const [cloudMatches, cloudNotes, cloudMsgs, lastSeen] = await Promise.all([
@@ -257,8 +292,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (ahead.length) void upsertCloudMatches(ahead)
           const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
           for (const n of cloudNotes) noteMap.set(n.id, n)
-          const msgMap = new Map(s.messages.map((m) => [m.id, m]))
-          for (const m of cloudMsgs) msgMap.set(m.id, m)
+          const other = openChatRef.current
+          if (other) {
+            const openIds = new Set(
+              matches
+                .filter((m) => m.userId === uid || m.candidateId === uid)
+                .filter((m) => otherParty(m, uid) === other)
+                .map((m) => m.id),
+            )
+            for (const msg of cloudMsgs) {
+              if (msg.senderId === other) openIds.add(msg.matchId)
+            }
+            for (const [id, n] of noteMap) {
+              if (n.userId === uid && n.type === 'message' && n.matchId && openIds.has(n.matchId) && !n.read) {
+                noteMap.set(id, { ...n, read: true })
+                void markCloudMatchMessagesRead(uid, n.matchId)
+              }
+            }
+          }
           const profiles = s.profiles.map((p) =>
             lastSeen.has(p.id) ? { ...p, lastSeen: lastSeen.get(p.id) } : p,
           )
@@ -267,25 +318,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
             profiles,
             matches,
             notifications: [...noteMap.values()],
-            messages: [...msgMap.values()],
+            messages: mergeChatMessages(s.messages, cloudMsgs),
           }
         })
       } catch {
         /* keep local */
       }
     }
-    const n = window.setInterval(() => void tick(), 3000)
+    const n = window.setInterval(() => void tick(), 1500)
     void tick()
-    const channel = client
+
+    const live = client
       .channel(`mh-live-${uid}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => void tick())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, (payload) => {
+        const msg = messageFromRow(payload.new as Record<string, unknown>)
+        if (msg) ingest([msg])
+        void tick()
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, () => void tick())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => void tick())
       .subscribe()
+
+    const pairChannels = partners.map((other) => {
+      const ch = client.channel(pairChannelName(uid, other), {
+        config: { broadcast: { ack: true } },
+      })
+      ch.on('broadcast', { event: 'msg' }, ({ payload }) => {
+        const msg = payload as ChatMessage
+        if (!msg?.id || msg.senderId === uid) return
+        ingest([msg])
+      })
+      ch.subscribe()
+      pairChannelsRef.current.set(other, ch)
+      return ch
+    })
+
     return () => {
       window.clearInterval(n)
-      void client.removeChannel(channel)
+      void client.removeChannel(live)
+      for (const ch of pairChannels) void client.removeChannel(ch)
+      pairChannelsRef.current.clear()
     }
-  }, [store.currentUserId])
+  }, [store.currentUserId, chatPartnersKey])
 
   useEffect(() => {
     if (!supabase || !store.currentUserId) return
@@ -330,9 +404,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return uniqueByOther(paid, me, byId, store.messages)
   }, [store.matches, store.currentUserId, store.profiles, store.messages])
 
-  const unreadChat = store.notifications.filter(
-    (n) => n.userId === store.currentUserId && n.type === 'message' && !n.read,
-  ).length
+  const unreadChat = store.notifications.filter((n) => {
+    if (n.userId !== store.currentUserId || n.type !== 'message' || n.read) return false
+    if (!openChatOtherId || !store.currentUserId || !n.matchId) return true
+    const match = store.matches.find((m) => m.id === n.matchId)
+    if (match && otherParty(match, store.currentUserId) === openChatOtherId) return false
+    if (store.messages.some((m) => m.matchId === n.matchId && m.senderId === openChatOtherId)) return false
+    return true
+  }).length
   const waitingRequests = incoming.filter((m) => m.status === 'selected_and_paid').length
   const inboxBadge = waitingRequests + unreadChat
 
@@ -363,6 +442,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     allMatches: store.matches,
     incoming,
     inboxBadge,
+    setOpenChat,
     notifications: store.notifications.filter((n) => n.userId === store.currentUserId),
     messages: store.messages,
     register: async (name, phone, email, password) => {
@@ -642,19 +722,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const match = canonical ?? raw
       const targetId = match?.id ?? matchId
       msg.matchId = targetId
-      patch((s) => ({ ...s, messages: [...s.messages, msg] }))
+      patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, [msg]) }))
+      if (otherId) {
+        void pairChannelsRef.current.get(otherId)?.send({ type: 'broadcast', event: 'msg', payload: msg })
+      }
       try {
         if (match) await upsertCloudMatches([match])
-        const via = await insertCloudMessage(msg)
-        if (via === 'row' && otherId) {
+        const saved = await insertCloudMessage(msg)
+        if (saved.id !== msg.id) {
+          const confirmed = { ...msg, id: saved.id }
+          patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, [confirmed]) }))
+          if (otherId) {
+            void pairChannelsRef.current.get(otherId)?.send({
+              type: 'broadcast',
+              event: 'msg',
+              payload: confirmed,
+            })
+          }
+        }
+        if (saved.via === 'row' && otherId) {
           await insertCloudNotification(otherId, targetId, 'message', msg.body.slice(0, 80))
         }
         const cloudMsgs = await fetchVisibleCloudMessages()
-        patch((s) => {
-          const msgMap = new Map(s.messages.map((m) => [m.id, m]))
-          for (const m of cloudMsgs) msgMap.set(m.id, m)
-          return { ...s, messages: [...msgMap.values()] }
-        })
+        patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, cloudMsgs) }))
         return 'ok'
       } catch {
         return 'failed'
@@ -771,9 +861,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void markCloudMatchMessagesRead(user.id, matchId)
       void fetchCloudMessages(matchId).then((cloud) => {
         patch((s) => {
-          const msgMap = new Map(s.messages.map((m) => [m.id, m]))
-          for (const m of cloud) msgMap.set(m.id, m)
-          return { ...s, messages: [...msgMap.values()] }
+          const next = mergeChatMessages(s.messages, cloud)
+          return next === s.messages ? s : { ...s, messages: next }
         })
       })
       patch((s) => ({
