@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { OnlineBadge } from '../components/OnlineBadge'
 import { pairSharedContact } from '../lib/contact'
-import { threadMatchIds } from '../lib/chatLive'
+import { dedupeChatMessages, threadMatchIds } from '../lib/chatLive'
 import { involvesPair, otherParty, pairMatchesForPerson, pickCanonicalMatch } from '../lib/pair'
 
 export function ChatPage() {
@@ -53,9 +53,9 @@ export function ChatPage() {
 
   const thread = useMemo(
     () =>
-      messages
-        .filter((m) => threadIds.has(m.matchId) || (other && m.senderId === other.id))
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      dedupeChatMessages(
+        messages.filter((m) => threadIds.has(m.matchId) || (other && m.senderId === other.id)),
+      ),
     [messages, threadIds, other],
   )
 
@@ -79,6 +79,10 @@ export function ChatPage() {
     if (!el) return
     el.scrollTop = el.scrollHeight
   }, [thread.at(-1)?.id])
+
+  const noteApproved = notifications.some(
+    (n) => n.type === 'approved' && n.matchId && (threadIds.has(n.matchId) || n.matchId === opened?.id || n.matchId === match?.id),
+  )
 
   if (!user || !match) {
     return (
@@ -113,20 +117,19 @@ export function ChatPage() {
     )
   }
 
-  if (match.status !== 'partner_approved') {
+  if (match.status !== 'partner_approved' && !noteApproved) {
     return (
       <div>
         <Link to="/app/approvals" className="mb-4 inline-block text-sm font-semibold text-wine">
           ← {t.backToInbox}
         </Link>
         <h1 className="mt-2 text-2xl font-bold">{other?.name ?? t.waiting}</h1>
-        <p className="mt-2 text-ink/60">{t.waitingCannotEnter}</p>
+        <p className="mt-2 text-ink/60">{t.waitingAutoOpen}</p>
       </div>
     )
   }
 
   const displayName = other?.name ?? t.them
-
   const openId = match.id
   const blocked = Boolean(user.chatBlocked)
   const revealed = other ? pairSharedContact(pair, other) : { phone: '', email: '' }
@@ -150,6 +153,7 @@ export function ChatPage() {
         </Link>
         <h1 className="text-lg font-bold">{displayName}</h1>
         {other ? <OnlineBadge lastSeen={other.lastSeen} /> : null}
+        <p className="mt-1 text-xs text-ink/45">{t.chatEphemeral}</p>
         {revealed.phone || revealed.email ? (
           <div className="mt-1 space-y-0.5 text-sm text-ink/70">
             {revealed.phone ? (

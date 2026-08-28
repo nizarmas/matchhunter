@@ -101,6 +101,12 @@ export function scoreMatch(me: Questionnaire, them: Profile) {
 export function curateMatches(me: Profile, pool: Profile[], existing: Match[]): Match[] {
   const mine = existing.filter((m) => m.userId === me.id)
   const taken = new Set(mine.map((m) => m.candidateId))
+  const rejected = new Set<string>()
+  for (const m of existing) {
+    if (m.status !== 'declined') continue
+    if (m.userId === me.id) rejected.add(m.candidateId)
+    if (m.candidateId === me.id) rejected.add(m.userId)
+  }
   const busy = new Set<string>()
   for (const m of existing) {
     if (m.status === 'pending' || m.status === 'declined') continue
@@ -124,7 +130,7 @@ export function curateMatches(me: Profile, pool: Profile[], existing: Match[]): 
   })
   const busyPeople = pool.filter((p) => busy.has(p.id))
   const pendingKeep = mine.filter((m) => {
-    if (m.status !== 'pending' || busy.has(m.candidateId)) return false
+    if (m.status !== 'pending' || busy.has(m.candidateId) || rejected.has(m.candidateId)) return false
     const cand = pool.find((p) => p.id === m.candidateId)
     if (cand && busyPeople.some((q) => isSamePerson(q, cand))) return false
     return ranked.some((r) => r.p.id === m.candidateId)
@@ -132,7 +138,7 @@ export function curateMatches(me: Profile, pool: Profile[], existing: Match[]): 
 
   const result = [...kept, ...pendingKeep]
   const have = new Set(result.map((m) => m.candidateId))
-  const skipIds = new Set([...busy, ...taken, ...have])
+  const skipIds = new Set([...busy, ...taken, ...have, ...rejected])
   const skipPeople = pool.filter((p) => skipIds.has(p.id))
   const alreadyHave = (p: Profile) => skipIds.has(p.id) || skipPeople.some((q) => isSamePerson(q, p))
 

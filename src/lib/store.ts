@@ -69,7 +69,7 @@ export function loadStore(): Store {
 
     const raw = localStorage.getItem(KEY)
     if (!raw) return empty()
-    const next = withSeeds(JSON.parse(raw) as Store)
+    const next = { ...withSeeds(JSON.parse(raw) as Store), messages: [] as ChatMessage[] }
     if (isInboxHeld()) {
       return { ...next, matches: (next.matches ?? []).filter(isLiveMatch) }
     }
@@ -80,7 +80,7 @@ export function loadStore(): Store {
 }
 
 export function saveStore(store: Store) {
-  localStorage.setItem(KEY, JSON.stringify(store))
+  localStorage.setItem(KEY, JSON.stringify({ ...store, messages: [] }))
 }
 
 export function rememberEmail(email: string) {

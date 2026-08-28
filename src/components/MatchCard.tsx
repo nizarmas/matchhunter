@@ -87,8 +87,8 @@ function PendingActions({ matchId }: { matchId: string }) {
       {hasMembership ? (
         <button
           type="button"
-          onClick={() => {
-            sendRequest(matchId)
+          onClick={async () => {
+            await sendRequest(matchId)
             nav('/app/approvals')
           }}
           className="w-full rounded-2xl bg-wine py-3 text-sm font-bold text-paper"

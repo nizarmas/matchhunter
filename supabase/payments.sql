@@ -139,8 +139,20 @@ begin
   ) then
     raise exception 'cannot_delete_admin';
   end if;
-  delete from auth.users where id = target_id;
+  delete from public.messages
+  where sender_id = target_id
+     or match_id in (
+       select id from public.matches where user_id = target_id or candidate_id = target_id
+     );
+  delete from public.notifications
+  where user_id = target_id
+     or match_id in (
+       select id from public.matches where user_id = target_id or candidate_id = target_id
+     );
+  delete from public.transactions where user_id = target_id;
+  delete from public.matches where user_id = target_id or candidate_id = target_id;
   delete from public.profiles where id = target_id;
+  delete from auth.users where id = target_id;
 end;
 $$;
 

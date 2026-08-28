@@ -66,8 +66,8 @@ export function UnlockPage() {
         <p className="mt-4 text-sm leading-relaxed text-ink/70">{t.paidHint}</p>
         <button
           type="button"
-          onClick={() => {
-            sendRequest(match.id)
+          onClick={async () => {
+            await sendRequest(match.id)
             nav('/app/approvals')
           }}
           className="mt-6 w-full rounded-2xl bg-wine py-3 font-bold text-paper"

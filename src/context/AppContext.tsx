@@ -5,7 +5,7 @@ import {
   fetchCloudNotifications,
   fetchCloudTransactions,
   fetchVisibleCloudMessages,
-  fetchCloudMessages,
+  fetchCloudProfileIds,
   fetchCloudProfiles,
   fetchLastSeenMap,
   touchLastSeen,
@@ -14,16 +14,20 @@ import {
   insertCloudTransaction,
   markCloudNotificationsRead,
   markCloudMatchMessagesRead,
+  matchFromRow,
+  noteFromRow,
+  respondCloudMatch,
   upsertCloudMatches,
   upsertCloudProfile,
+  wipeCloudChats,
 } from '../lib/db'
 import { fetchIsCurrentUserAdmin, fetchPaymentSettings, setCloudAdminEmail, setCloudPaymentSettings, cloudDeleteCustomer, cloudRevokeMembership, cloudResetAllMemberships } from '../lib/admin'
 import { addMembershipPeriod, isMemberActive, MEMBER_PRICE_ILS } from '../lib/membership'
 import { isOffensive } from '../lib/moderation'
 import { DEFAULT_PAYMENT_SETTINGS, type PaymentSettings } from '../lib/payments'
 import { curateMatches } from '../lib/matching'
-import { mergeChatMessages, messageFromRow, pairChannelName } from '../lib/chatLive'
-import { chattingIds, engagedIds, involvesPair, otherParty, overlapsKnown, pairIsOpen, pairMatches, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
+import { dropPairChat, mergeChatMessages, messageFromRow, pairChannelName, reconcileCloudMessages } from '../lib/chatLive'
+import { chattingIds, engagedIds, involvesPair, otherParty, overlapsKnown, pairIsOpen, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
 import { SEED_PROFILES } from '../lib/seed'
 import { holdInbox, isInboxHeld, isLiveMatch, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
@@ -74,13 +78,30 @@ function mergeMatchList(cloud: Match[], local: Match[]) {
       continue
     }
     const richer = (rank[c.status] ?? 0) >= (rank[l.status] ?? 0) ? c : l
+    const declinedWins =
+      (c.status === 'declined' && l.status !== 'partner_approved') ||
+      (l.status === 'declined' && c.status !== 'partner_approved')
+    const chosen = declinedWins ? (c.status === 'declined' ? c : l) : richer
     map.set(c.id, {
-      ...richer,
+      ...chosen,
       shareEmail: Boolean(l.shareEmail || c.shareEmail),
       sharePhone: Boolean(l.sharePhone || c.sharePhone),
     })
   }
   return [...map.values()].filter((m) => !m.candidateId.startsWith('seed-'))
+}
+
+function applyApprovalNotes(matches: Match[], notes: { type: string; matchId?: string }[]): Match[] {
+  const ids = new Set(notes.filter((n) => n.type === 'approved' && n.matchId).map((n) => n.matchId as string))
+  if (ids.size === 0) return matches
+  const approved = matches.filter((m) => ids.has(m.id))
+  return matches.map((m) => {
+    if (m.status === 'partner_approved' || m.status === 'declined') return m
+    const hit =
+      ids.has(m.id) ||
+      approved.some((a) => involvesPair(a, m.userId, m.candidateId))
+    return hit ? { ...m, status: 'partner_approved' as const, approvedAt: m.approvedAt ?? new Date().toISOString() } : m
+  })
 }
 
 function laterIso(a?: string, b?: string) {
@@ -89,7 +110,7 @@ function laterIso(a?: string, b?: string) {
   return new Date(a).getTime() >= new Date(b).getTime() ? a : b
 }
 
-function mergeProfiles(cloud: Profile[], local: Profile[]) {
+function mergeProfiles(cloud: Profile[], local: Profile[], me?: string) {
   const map = new Map<string, Profile>()
   const localById = new Map(local.map((p) => [p.id, p]))
   for (const p of SEED_PROFILES) map.set(p.id, p)
@@ -109,9 +130,57 @@ function mergeProfiles(cloud: Profile[], local: Profile[]) {
     const ph = p.phone.replace(/\D/g, '')
     if (ph.length >= 9 && phones.has(ph)) continue
     if (p.email && emails.has(p.email.toLowerCase())) continue
-    map.set(p.id, p)
+    if (me && p.id === me) map.set(p.id, p)
   }
   return [...map.values()]
+}
+
+function dropGoneMatches(
+  matches: Match[],
+  alive: Set<string>,
+  cloudMatchIds: Set<string>,
+  uid: string,
+) {
+  return matches.filter((m) => {
+    if (m.candidateId.startsWith('seed-')) return false
+    const userOk = m.userId === uid || m.userId.startsWith('seed-') || alive.has(m.userId)
+    const otherOk = m.candidateId === uid || alive.has(m.candidateId)
+    if (!userOk || !otherOk) return false
+    if (cloudMatchIds.has(m.id)) return true
+    return m.status === 'pending' && m.userId === uid
+  })
+}
+
+function dropGoneThread(
+  matches: Match[],
+  messages: ChatMessage[],
+  notifications: AppNotification[],
+) {
+  const matchIds = new Set(matches.map((m) => m.id))
+  return {
+    messages: messages.filter((m) => matchIds.has(m.matchId)),
+    notifications: notifications.filter((n) => n.type === 'admin' || !n.matchId || matchIds.has(n.matchId)),
+  }
+}
+
+function mergeNotes(local: AppNotification[], cloud: AppNotification[]) {
+  const cloudIds = new Set(cloud.map((n) => n.id))
+  const map = new Map<string, AppNotification>()
+  for (const n of local) {
+    if (n.type === 'message' && !cloudIds.has(n.id)) continue
+    map.set(n.id, n)
+  }
+  for (const n of cloud) map.set(n.id, n)
+  return [...map.values()]
+}
+
+function withoutSessionChat(s: Store): Store {
+  return {
+    ...s,
+    currentUserId: null,
+    messages: [],
+    notifications: s.notifications.filter((n) => n.type !== 'message'),
+  }
 }
 
 type AppCtx = {
@@ -136,7 +205,7 @@ type AppCtx = {
   rejectMatch: (matchId: string) => void
   profileById: (id: string) => Profile | undefined
   hasMembership: boolean
-  sendRequest: (matchId: string) => void
+  sendRequest: (matchId: string) => Promise<void>
   payForMatch: (matchId: string, gatewayId: string, gateway: Transaction['gateway']) => void
   decideIncoming: (matchId: string, approve: boolean, share?: { email: boolean; phone: boolean }) => Promise<string | undefined>
   sendMessage: (matchId: string, body: string) => Promise<'ok' | 'warned' | 'blocked' | 'failed'>
@@ -172,15 +241,69 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const openChatRef = useRef<string | null>(null)
   openChatRef.current = openChatOtherId
   const pairChannelsRef = useRef(new Map<string, ReturnType<NonNullable<typeof supabase>['channel']>>())
+  const realtimeOkRef = useRef(false)
+  const syncBusyRef = useRef(false)
 
   useEffect(() => {
     applyDoc(store.lang)
-    saveStore(store)
+    const t = window.setTimeout(() => saveStore(store), 400)
+    return () => window.clearTimeout(t)
   }, [store])
 
   function patch(fn: (s: Store) => Store) {
     setStore((s) => fn(s))
   }
+
+  function ingestMessages(uid: string, msgs: ChatMessage[]) {
+    if (msgs.length === 0) return
+    patch((s) => {
+      const messages = mergeChatMessages(s.messages, msgs)
+      const other = openChatRef.current
+      if (!other) return messages === s.messages ? s : { ...s, messages }
+      const openIds = new Set(
+        s.matches
+          .filter((m) => m.userId === uid || m.candidateId === uid)
+          .filter((m) => otherParty(m, uid) === other)
+          .map((m) => m.id),
+      )
+      for (const msg of msgs) {
+        if (msg.senderId === other) openIds.add(msg.matchId)
+      }
+      const notifications = s.notifications.map((n) =>
+        n.userId === uid && (n.type === 'message' || n.type === 'approved') && n.matchId && openIds.has(n.matchId)
+          ? { ...n, read: true }
+          : n,
+      )
+      for (const id of openIds) void markCloudMatchMessagesRead(uid, id)
+      return { ...s, messages, notifications }
+    })
+  }
+
+  function ingestMatch(row: Match) {
+    patch((s) => {
+      const uid = s.currentUserId
+      if (!uid || (row.userId !== uid && row.candidateId !== uid)) return s
+      let matches = mergeMatchList([row], s.matches)
+      matches = applyApprovalNotes(matches, s.notifications)
+      if (isInboxHeld()) matches = matches.filter(isLiveMatch)
+      return { ...s, matches }
+    })
+  }
+
+  function ingestNote(note: AppNotification) {
+    patch((s) => {
+      if (!s.currentUserId || note.userId !== s.currentUserId) return s
+      const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
+      noteMap.set(note.id, note)
+      const notifications = [...noteMap.values()]
+      return { ...s, notifications, matches: applyApprovalNotes(s.matches, notifications) }
+    })
+  }
+
+  const ingestMessagesRef = useRef(ingestMessages)
+  const ingestMatchRef = useRef(ingestMatch)
+  ingestMessagesRef.current = ingestMessages
+  ingestMatchRef.current = ingestMatch
 
   async function hydrate(userId: string) {
     let admin = false
@@ -200,9 +323,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const cloudProfiles = await fetchCloudProfiles()
       const meCloud = cloudProfiles.find((p) => p.id === userId)
       if (meCloud?.accountBlocked) {
+        try {
+          await wipeCloudChats()
+        } catch {
+          /* still leave */
+        }
         setIsAdmin(false)
         void supabase?.auth.signOut()
-        patch((s) => ({ ...s, currentUserId: null }))
+        patch(withoutSessionChat)
         return
       }
       const [cloudMatches, cloudTx, cloudNotes, cloudMsgs] = await Promise.all([
@@ -212,20 +340,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
         fetchVisibleCloudMessages(),
       ])
       patch((s) => {
-        const profiles = mergeProfiles(cloudProfiles, s.profiles)
-        let matches = mergeMatchList(cloudMatches, s.matches)
+        const profiles = mergeProfiles(cloudProfiles, s.profiles, userId)
+        const alive = new Set(cloudProfiles.map((p) => p.id))
+        const notifications = mergeNotes(s.notifications, cloudNotes)
+        let matches = applyApprovalNotes(mergeMatchList(cloudMatches, s.matches), notifications)
+        matches = dropGoneMatches(matches, alive, new Set(cloudMatches.map((m) => m.id)), userId)
         if (isInboxHeld()) matches = matches.filter(isLiveMatch)
+        const thread = dropGoneThread(matches, reconcileCloudMessages(s.messages, cloudMsgs), notifications)
         const txMap = new Map(s.transactions.map((t) => [t.id, t]))
         for (const t of cloudTx) txMap.set(t.id, t)
-        const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
-        for (const n of cloudNotes) noteMap.set(n.id, n)
         return {
           ...s,
           profiles,
           matches,
           transactions: [...txMap.values()],
-          notifications: [...noteMap.values()],
-          messages: mergeChatMessages(s.messages, cloudMsgs),
+          notifications: thread.notifications,
+          messages: thread.messages,
           currentUserId: userId,
         }
       })
@@ -253,61 +383,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const chatPartnersKey = store.currentUserId
-    ? [...chattingIds(store.matches, store.currentUserId)].sort().join('|')
+  const livePartnersKey = store.currentUserId
+    ? [...engagedIds(store.matches, store.currentUserId)].sort().join('|')
     : ''
 
   useEffect(() => {
     if (!supabase || !store.currentUserId) return
     const client = supabase
     const uid = store.currentUserId
-    const partners = chatPartnersKey ? chatPartnersKey.split('|') : []
+    let dead = false
 
-    function ingest(msgs: ChatMessage[]) {
-      if (msgs.length === 0) return
-      patch((s) => {
-        const messages = mergeChatMessages(s.messages, msgs)
-        const other = openChatRef.current
-        if (!other) return messages === s.messages ? s : { ...s, messages }
-        const openIds = new Set(
-          s.matches
-            .filter((m) => m.userId === uid || m.candidateId === uid)
-            .filter((m) => otherParty(m, uid) === other)
-            .map((m) => m.id),
-        )
-        for (const msg of msgs) {
-          if (msg.senderId === other) openIds.add(msg.matchId)
-        }
-        const notifications = s.notifications.map((n) =>
-          n.userId === uid && (n.type === 'message' || n.type === 'approved') && n.matchId && openIds.has(n.matchId)
-            ? { ...n, read: true }
-            : n,
-        )
-        for (const id of openIds) void markCloudMatchMessagesRead(uid, id)
-        return { ...s, messages, notifications }
-      })
-    }
-
-    async function tick() {
+    async function syncLite() {
+      if (syncBusyRef.current || document.visibilityState === 'hidden') return
+      syncBusyRef.current = true
       try {
-        const [cloudMatches, cloudNotes, cloudMsgs, lastSeen, cloudProfiles, cloudTx] = await Promise.all([
+        const [cloudMatches, cloudNotes, cloudMsgs, alive] = await Promise.all([
           fetchCloudMatches(uid),
           fetchCloudNotifications(uid),
           fetchVisibleCloudMessages(),
-          fetchLastSeenMap(),
-          fetchCloudProfiles(),
-          fetchCloudTransactions(),
+          fetchCloudProfileIds(),
         ])
+        if (dead) return
         patch((s) => {
-          let matches = mergeMatchList(cloudMatches, s.matches)
+          const noteMap = new Map(mergeNotes(s.notifications, cloudNotes).map((n) => [n.id, n]))
+          let matches = applyApprovalNotes(mergeMatchList(cloudMatches, s.matches), [...noteMap.values()])
+          matches = dropGoneMatches(matches, alive, new Set(cloudMatches.map((m) => m.id)), uid)
           if (isInboxHeld()) matches = matches.filter(isLiveMatch)
           const ahead = matches.filter((m) => {
             const c = cloudMatches.find((x) => x.id === m.id)
             return m.status === 'partner_approved' && c && c.status !== 'partner_approved'
           })
           if (ahead.length) void upsertCloudMatches(ahead)
-          const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
-          for (const n of cloudNotes) noteMap.set(n.id, n)
           const other = openChatRef.current
           if (other) {
             const openIds = new Set(
@@ -326,68 +432,159 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             }
           }
-          const txMap = new Map(s.transactions.map((t) => [t.id, t]))
-          for (const t of cloudTx) txMap.set(t.id, t)
-          const profiles = mergeProfiles(cloudProfiles, s.profiles).map((p) =>
-            lastSeen.has(p.id) ? { ...p, lastSeen: lastSeen.get(p.id) } : p,
-          )
-          const me = profiles.find((p) => p.id === uid)
-          const cloudMe = cloudProfiles.find((p) => p.id === uid)
-          if (
-            me?.membershipUntil &&
-            (!cloudMe?.membershipUntil ||
-              new Date(me.membershipUntil).getTime() > new Date(cloudMe.membershipUntil).getTime() + 1000)
-          ) {
-            void upsertCloudProfile(me)
-          }
+          const thread = dropGoneThread(matches, reconcileCloudMessages(s.messages, cloudMsgs), [...noteMap.values()])
           return {
             ...s,
-            profiles,
+            profiles: s.profiles.filter((p) => p.id === uid || p.id.startsWith('seed-') || alive.has(p.id)),
             matches,
-            transactions: [...txMap.values()],
-            notifications: [...noteMap.values()],
-            messages: mergeChatMessages(s.messages, cloudMsgs),
+            notifications: thread.notifications,
+            messages: thread.messages,
           }
         })
       } catch {
         /* keep local */
+      } finally {
+        syncBusyRef.current = false
       }
     }
-    const n = window.setInterval(() => void tick(), 1500)
-    void tick()
+
+    async function syncPresence() {
+      if (document.visibilityState === 'hidden') return
+      try {
+        const lastSeen = await fetchLastSeenMap()
+        if (dead) return
+        patch((s) => ({
+          ...s,
+          profiles: s.profiles.map((p) => (lastSeen.has(p.id) ? { ...p, lastSeen: lastSeen.get(p.id) } : p)),
+        }))
+      } catch {
+        /* keep local */
+      }
+    }
+
+    void syncLite()
+    void syncPresence()
+    const lite = window.setInterval(() => {
+      if (realtimeOkRef.current) return
+      void syncLite()
+    }, 2500)
+    const safety = window.setInterval(() => void syncLite(), 10000)
+    const presence = window.setInterval(() => void syncPresence(), 15000)
 
     const live = client
       .channel(`mh-live-${uid}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, (payload) => {
+        if (payload.eventType === 'DELETE') {
+          const id = String((payload.old as { id?: string } | null)?.id ?? '')
+          if (!id) return
+          patch((s) => ({ ...s, messages: s.messages.filter((m) => m.id !== id) }))
+          return
+        }
         const msg = messageFromRow(payload.new as Record<string, unknown>)
-        if (msg) ingest([msg])
-        void tick()
+        if (msg && msg.senderId !== uid) ingestMessagesRef.current(uid, [msg])
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, () => void tick())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => void tick())
-      .subscribe()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, (payload) => {
+        if (payload.eventType === 'DELETE') {
+          const id = String((payload.old as { id?: string } | null)?.id ?? '')
+          if (!id) return
+          patch((s) => {
+            const matches = s.matches.filter((m) => m.id !== id)
+            const thread = dropGoneThread(matches, s.messages, s.notifications)
+            return { ...s, matches, messages: thread.messages, notifications: thread.notifications }
+          })
+          return
+        }
+        const row = matchFromRow(payload.new as Record<string, unknown>)
+        if (row) ingestMatchRef.current(row)
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'profiles' }, (payload) => {
+        const id = String((payload.old as { id?: string } | null)?.id ?? '')
+        if (!id || id === uid) return
+        patch((s) => {
+          const profiles = s.profiles.filter((p) => p.id !== id)
+          const matches = s.matches.filter((m) => m.userId !== id && m.candidateId !== id)
+          const thread = dropGoneThread(matches, s.messages, s.notifications)
+          return { ...s, profiles, matches, messages: thread.messages, notifications: thread.notifications }
+        })
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, (payload) => {
+        if (payload.eventType === 'DELETE') {
+          const id = String((payload.old as { id?: string } | null)?.id ?? '')
+          if (!id) return
+          patch((s) => ({ ...s, notifications: s.notifications.filter((n) => n.id !== id) }))
+          return
+        }
+        const note = noteFromRow(payload.new as Record<string, unknown>)
+        if (note) ingestNote(note)
+      })
+      .subscribe((status) => {
+        realtimeOkRef.current = status === 'SUBSCRIBED'
+        if (status === 'SUBSCRIBED') void syncLite()
+      })
 
-    const pairChannels = partners.map((other) => {
+    return () => {
+      dead = true
+      realtimeOkRef.current = false
+      window.clearInterval(lite)
+      window.clearInterval(safety)
+      window.clearInterval(presence)
+      void client.removeChannel(live)
+    }
+  }, [store.currentUserId])
+
+  useEffect(() => {
+    if (!supabase || !store.currentUserId) return
+    const client = supabase
+    const uid = store.currentUserId
+    const wanted = new Set(livePartnersKey ? livePartnersKey.split('|') : [])
+    const have = pairChannelsRef.current
+    for (const [other, ch] of [...have]) {
+      if (wanted.has(other)) continue
+      void client.removeChannel(ch)
+      have.delete(other)
+    }
+    for (const other of wanted) {
+      if (have.has(other)) continue
       const ch = client.channel(pairChannelName(uid, other), {
-        config: { broadcast: { ack: true } },
+        config: { broadcast: { ack: false } },
       })
       ch.on('broadcast', { event: 'msg' }, ({ payload }) => {
         const msg = payload as ChatMessage
-        if (!msg?.id || msg.senderId === uid) return
-        ingest([msg])
+        if (!msg?.id || !msg.body || msg.senderId === uid) return
+        ingestMessagesRef.current(uid, [msg])
+      })
+      ch.on('broadcast', { event: 'wipe' }, ({ payload }) => {
+        const by = String((payload as { by?: string } | null)?.by ?? '')
+        if (!by || by === uid) return
+        patch((s) => ({
+          ...s,
+          messages: dropPairChat(s.messages, s.matches, by),
+          notifications: s.notifications.filter((n) => {
+            if (n.type !== 'message') return true
+            const match = s.matches.find((m) => m.id === n.matchId)
+            return !match || (match.userId !== by && match.candidateId !== by)
+          }),
+        }))
+      })
+      ch.on('broadcast', { event: 'match' }, ({ payload }) => {
+        const row = payload as Match
+        if (row?.id) ingestMatchRef.current(row)
       })
       ch.subscribe()
-      pairChannelsRef.current.set(other, ch)
-      return ch
-    })
-
-    return () => {
-      window.clearInterval(n)
-      void client.removeChannel(live)
-      for (const ch of pairChannels) void client.removeChannel(ch)
-      pairChannelsRef.current.clear()
+      have.set(other, ch)
     }
-  }, [store.currentUserId, chatPartnersKey])
+    return () => {
+      /* keep channels; next run adds/removes. full clear on logout below */
+    }
+  }, [store.currentUserId, livePartnersKey])
+
+  useEffect(() => {
+    if (store.currentUserId) return
+    const client = supabase
+    if (!client) return
+    for (const ch of pairChannelsRef.current.values()) void client.removeChannel(ch)
+    pairChannelsRef.current.clear()
+  }, [store.currentUserId])
 
   useEffect(() => {
     if (!supabase || !store.currentUserId) return
@@ -411,8 +608,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!me) return []
     const byId = (id: string) => store.profiles.find((p) => p.id === id)
     const busy = engagedIds(store.matches, me)
+    const rejected = new Set<string>()
+    for (const m of store.matches) {
+      if (m.status !== 'declined') continue
+      if (m.userId === me) rejected.add(m.candidateId)
+      if (m.candidateId === me) rejected.add(m.userId)
+    }
     const pending = store.matches.filter((m) => {
       if (m.userId !== me || m.status !== 'pending' || m.candidateId.startsWith('seed-')) return false
+      if (rejected.has(m.candidateId)) return false
       const person = byId(m.candidateId)
       return person ? !overlapsKnown(person, busy, byId) : !busy.has(m.candidateId)
     })
@@ -463,10 +667,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const hasMembership = isMemberActive(user?.membershipUntil, lastPayment?.createdAt)
 
+  function broadcastChatWipe(uid: string) {
+    for (const m of store.matches) {
+      if (m.userId !== uid && m.candidateId !== uid) continue
+      void pairChannelsRef.current.get(otherParty(m, uid))?.send({
+        type: 'broadcast',
+        event: 'wipe',
+        payload: { by: uid },
+      })
+    }
+  }
+
+  async function leaveSystem() {
+    const uid = store.currentUserId
+    if (uid) broadcastChatWipe(uid)
+    try {
+      await wipeCloudChats()
+    } catch {
+      /* still leave */
+    }
+    setIsAdmin(false)
+    void supabase?.auth.signOut()
+    patch(withoutSessionChat)
+  }
+
   useEffect(() => {
     if (!user?.accountBlocked) return
-    void supabase?.auth.signOut()
-    patch((s) => ({ ...s, currentUserId: null }))
+    void leaveSystem()
+    // leaveSystem reads current store; run once when the account is blocked
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.accountBlocked])
 
   const value: AppCtx = {
@@ -573,9 +802,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return found
     },
     logout: () => {
-      setIsAdmin(false)
-      void supabase?.auth.signOut()
-      patch((s) => ({ ...s, currentUserId: null }))
+      void leaveSystem()
     },
     saveQuestionnaire: (q) => {
       if (!user) return
@@ -604,12 +831,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
           /* use local */
         }
         patch((s) => {
-          const me = (cloudProfiles.length ? mergeProfiles(cloudProfiles, s.profiles) : s.profiles).find(
+          const me = (cloudProfiles.length ? mergeProfiles(cloudProfiles, s.profiles, user.id) : s.profiles).find(
             (p) => p.id === user.id,
           )
           if (!me) return s
-          const profiles = cloudProfiles.length ? mergeProfiles(cloudProfiles, s.profiles) : s.profiles
-          const merged = cloudMatches.length ? mergeMatchList(cloudMatches, s.matches) : s.matches
+          const profiles = cloudProfiles.length ? mergeProfiles(cloudProfiles, s.profiles, user.id) : s.profiles
+          const merged = cloudMatches.length
+            ? dropGoneMatches(
+                mergeMatchList(cloudMatches, s.matches),
+                new Set(cloudProfiles.map((p) => p.id)),
+                new Set(cloudMatches.map((m) => m.id)),
+                me.id,
+              )
+            : s.matches
           const others = merged.filter((m) => m.userId !== me.id && !m.candidateId.startsWith('seed-'))
           const curated = curateMatches(me, profiles, merged)
           void upsertCloudMatches(curated)
@@ -619,21 +853,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     rejectMatch: (matchId) => {
       if (!user) return
+      const match = store.matches.find((m) => m.id === matchId)
+      if (!match) return
+      const otherId = match.candidateId
       patch((s) => {
         const me = s.profiles.find((p) => p.id === user.id)
         if (!me) return s
-        const marked = s.matches.map((m) => (m.id === matchId ? { ...m, status: 'declined' as const } : m))
-        const declined = marked.find((m) => m.id === matchId)
-        if (declined) void upsertCloudMatches([declined])
+        const marked = s.matches.map((m) =>
+          involvesPair(m, user.id, otherId) && m.status !== 'partner_approved'
+            ? { ...m, status: 'declined' as const }
+            : m,
+        )
+        const declined = marked.filter(
+          (m) => involvesPair(m, user.id, otherId) && m.status === 'declined',
+        )
+        if (declined.length) void upsertCloudMatches(declined)
         const others = marked.filter((m) => m.userId !== me.id)
         const curated = curateMatches(me, s.profiles, marked)
         void upsertCloudMatches(curated)
         return { ...s, matches: [...others, ...curated] }
       })
+      void pairChannelsRef.current.get(otherId)?.send({
+        type: 'broadcast',
+        event: 'match',
+        payload: { ...match, status: 'declined' },
+      })
     },
     profileById: (id) => store.profiles.find((p) => p.id === id),
     hasMembership,
-    sendRequest: (matchId) => {
+    sendRequest: async (matchId) => {
       if (!user) return
       const match = store.matches.find((m) => m.id === matchId)
       if (!match || match.status !== 'pending') return
@@ -651,8 +899,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reversePending = store.matches.filter(
         (m) => m.userId === match.candidateId && m.candidateId === user.id && m.status === 'pending',
       )
-      void upsertCloudMatches([paid, ...reversePending.map((m) => ({ ...m, status: 'declined' as const }))])
-      void insertCloudNotification(match.candidateId, matchId, 'interest', user.name)
+      const declined = reversePending.map((m) => ({ ...m, status: 'declined' as const }))
       patch((s) => ({
         ...s,
         notifications: [...s.notifications, note],
@@ -664,6 +911,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return m
         }),
       }))
+      void pairChannelsRef.current.get(match.candidateId)?.send({ type: 'broadcast', event: 'match', payload: paid })
+      await upsertCloudMatches([paid, ...declined])
+      await insertCloudNotification(match.candidateId, matchId, 'interest', user.name)
     },
     payForMatch: (matchId, gatewayId, gateway) => {
       if (!user) return
@@ -705,8 +955,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : []
       void upsertCloudProfile(updated)
       void insertCloudTransaction(tx)
-      if (paid) void upsertCloudMatches([paid, ...reversePending.map((m) => ({ ...m, status: 'declined' as const }))])
-      if (sendIt && match) void insertCloudNotification(match.candidateId, matchId, 'interest', user.name)
       patch((s) => ({
         ...s,
         profiles: s.profiles.map((p) => (p.id === user.id ? updated : p)),
@@ -722,6 +970,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             })
           : s.matches,
       }))
+      if (paid) {
+        void (async () => {
+          await upsertCloudMatches([paid, ...reversePending.map((m) => ({ ...m, status: 'declined' as const }))])
+          if (sendIt && match) await insertCloudNotification(match.candidateId, matchId, 'interest', user.name)
+        })()
+      }
     },
     decideIncoming: async (matchId, approve, share) => {
       if (!user) return undefined
@@ -735,20 +989,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         shareEmail: approve ? Boolean(share?.email) : false,
         sharePhone: approve ? Boolean(share?.phone) : false,
       }
-      const extras = approve
-        ? store.matches
-            .filter(
-              (m) =>
-                m.id !== matchId &&
-                involvesPair(m, user.id, otherId) &&
-                (m.status === 'pending' || m.status === 'selected_and_paid'),
-            )
-            .map((m) => ({
-              ...m,
-              status: 'partner_approved' as const,
-              approvedAt: new Date().toISOString(),
-            }))
-        : []
+      const extras = store.matches
+        .filter(
+          (m) =>
+            m.id !== matchId &&
+            involvesPair(m, user.id, otherId) &&
+            m.status !== 'declined' &&
+            m.status !== 'partner_approved',
+        )
+        .map((m) => ({
+          ...m,
+          status: approve ? ('partner_approved' as const) : ('declined' as const),
+          approvedAt: approve ? new Date().toISOString() : m.approvedAt,
+        }))
       const note: AppNotification = {
         id: crypto.randomUUID(),
         userId: match.userId,
@@ -767,11 +1020,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return extra ?? m
         }),
       }))
+      void pairChannelsRef.current.get(otherId)?.send({ type: 'broadcast', event: 'match', payload: updated })
+      for (const extra of extras) {
+        void pairChannelsRef.current.get(otherId)?.send({ type: 'broadcast', event: 'match', payload: extra })
+      }
       try {
-        await upsertCloudMatches([updated, ...extras])
+        await respondCloudMatch(matchId, approve, share)
+        for (const extra of extras) {
+          try {
+            await respondCloudMatch(extra.id, approve, extra.id === matchId ? share : undefined)
+          } catch {
+            /* pair row may already be updated */
+          }
+        }
         await insertCloudNotification(match.userId, matchId, approve ? 'approved' : 'declined', user.name)
       } catch {
-        void upsertCloudMatches([updated, ...extras])
+        try {
+          await upsertCloudMatches([updated, ...extras])
+          await insertCloudNotification(match.userId, matchId, approve ? 'approved' : 'declined', user.name)
+        } catch {
+          void upsertCloudMatches([updated, ...extras])
+        }
       }
       return approve ? updated.id : undefined
     },
@@ -800,51 +1069,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const otherId = raw ? otherParty(raw, user.id) : null
       const canonical = otherId ? pickCanonicalMatch(store.matches, user.id, otherId, store.messages) : raw
       const match = canonical ?? raw
-      const pairIds = otherId
-        ? pairMatches(store.matches, user.id, otherId)
-            .filter((m) => m.status === 'partner_approved' || m.status === 'selected_and_paid')
-            .map((m) => m.id)
-        : []
-      const targets = [...new Set([match?.id ?? matchId, matchId, ...pairIds])]
-      msg.matchId = targets[0]
+      msg.matchId = match?.id ?? matchId
       patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, [msg]) }))
       if (otherId) {
         void pairChannelsRef.current.get(otherId)?.send({ type: 'broadcast', event: 'msg', payload: msg })
       }
       try {
-        if (match) {
-          try {
-            await upsertCloudMatches([match])
-          } catch {
-            /* candidate cannot insert the match row; sending still allowed */
-          }
-        }
-        let saved: { via: 'rpc' | 'row'; id: string } | undefined
-        let lastError: unknown
-        for (const id of targets) {
-          msg.matchId = id
-          try {
-            saved = await insertCloudMessage(msg)
-            break
-          } catch (err) {
-            lastError = err
-          }
-        }
-        if (!saved) throw lastError ?? new Error('send_failed')
+        if (match) void upsertCloudMatches([match])
+        const saved = await insertCloudMessage(msg)
         const confirmed = { ...msg, id: saved.id, matchId: msg.matchId }
-        patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, [confirmed]) }))
-        if (otherId) {
-          void pairChannelsRef.current.get(otherId)?.send({
-            type: 'broadcast',
-            event: 'msg',
-            payload: confirmed,
-          })
-        }
+        patch((s) => ({
+          ...s,
+          messages: mergeChatMessages(
+            s.messages.filter((m) => m.id !== msg.id),
+            [confirmed],
+          ),
+        }))
         if (saved.via === 'row' && otherId) {
-          await insertCloudNotification(otherId, confirmed.matchId, 'message', msg.body.slice(0, 80))
+          void insertCloudNotification(otherId, confirmed.matchId, 'message', msg.body.slice(0, 80))
         }
-        const cloudMsgs = await fetchVisibleCloudMessages()
-        patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, cloudMsgs) }))
         return 'ok'
       } catch {
         patch((s) => ({ ...s, messages: s.messages.filter((m) => m.id !== msg.id) }))
@@ -960,20 +1203,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     markMatchRead: (matchId) => {
       if (!user) return
       void markCloudMatchMessagesRead(user.id, matchId)
-      void fetchCloudMessages(matchId).then((cloud) => {
-        patch((s) => {
-          const next = mergeChatMessages(s.messages, cloud)
-          return next === s.messages ? s : { ...s, messages: next }
+      patch((s) => {
+        let changed = false
+        const notifications = s.notifications.map((n) => {
+          if (n.userId === user.id && n.matchId === matchId && (n.type === 'message' || n.type === 'approved') && !n.read) {
+            changed = true
+            return { ...n, read: true }
+          }
+          return n
         })
+        return changed ? { ...s, notifications } : s
       })
-      patch((s) => ({
-        ...s,
-        notifications: s.notifications.map((n) =>
-          n.userId === user.id && n.matchId === matchId && (n.type === 'message' || n.type === 'approved')
-            ? { ...n, read: true }
-            : n,
-        ),
-      }))
     },
   }
 

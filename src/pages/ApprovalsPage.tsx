@@ -173,13 +173,16 @@ function WaitingCard({ match }: { match: Match }) {
   const { t, profileById } = useApp()
   const p = profileById(match.candidateId)
   return (
-    <article className="rounded-[28px] bg-gold/10 p-5 shadow-sm ring-1 ring-gold/25">
+    <Link
+      to={`/app/chat/${match.id}`}
+      className="block rounded-[28px] bg-gold/10 p-5 shadow-sm ring-1 ring-gold/25"
+    >
       <p className="text-sm font-semibold text-gold">{t.waiting}</p>
       <h2 className="mt-1 text-xl font-bold">{p?.name ?? t.waiting}</h2>
       {p ? <OnlineBadge lastSeen={p.lastSeen} /> : null}
       <p className="mt-2 text-sm text-ink/60">{t.paidHint}</p>
       <p className="mt-3 rounded-2xl bg-card/80 px-4 py-3 text-sm font-semibold text-ink/70">{t.waitingCannotEnter}</p>
-    </article>
+    </Link>
   )
 }
 

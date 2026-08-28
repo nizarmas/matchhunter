@@ -101,6 +101,31 @@ export function rowToMatch(row: MatchRow): Match {
   }
 }
 
+export function matchFromRow(row: Record<string, unknown> | null | undefined): Match | null {
+  if (!row?.id || !row.user_id || !row.candidate_id || !row.status) return null
+  return rowToMatch(row as unknown as MatchRow)
+}
+
+export function noteFromRow(row: Record<string, unknown> | null | undefined): AppNotification | null {
+  if (!row?.id || !row.user_id || !row.type) return null
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    matchId: row.match_id ? String(row.match_id) : undefined,
+    type: (row.type as AppNotification['type']) ?? 'message',
+    body: String(row.body ?? ''),
+    read: Boolean(row.read),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+  }
+}
+
+export async function fetchCloudProfileIds(): Promise<Set<string>> {
+  if (!supabase) return new Set()
+  const { data, error } = await supabase.from('profiles').select('id')
+  if (error || !data) return new Set()
+  return new Set(data.map((row) => row.id as string))
+}
+
 export async function fetchCloudProfiles(): Promise<Profile[]> {
   if (!supabase) return []
   const { data, error } = await supabase.from('profiles').select('*')
@@ -299,25 +324,60 @@ export async function insertCloudTransaction(tx: Transaction) {
   })
 }
 
+export async function respondCloudMatch(
+  matchId: string,
+  approve: boolean,
+  share?: { email?: boolean; phone?: boolean },
+) {
+  if (!supabase || !isUuid(matchId)) throw new Error('no_cloud')
+  const rpc = await supabase.rpc('respond_to_match', {
+    p_match_id: matchId,
+    p_approve: approve,
+    p_share_email: Boolean(share?.email),
+    p_share_phone: Boolean(share?.phone),
+  })
+  if (!rpc.error) return
+  const patch: Record<string, unknown> = {
+    status: approve ? 'partner_approved' : 'declined',
+  }
+  if (approve) {
+    patch.approved_at = new Date().toISOString()
+    patch.share_email = Boolean(share?.email)
+    patch.share_phone = Boolean(share?.phone)
+  }
+  const first = await supabase.from('matches').update(patch).eq('id', matchId)
+  if (!first.error) return
+  if (!/share_email|share_phone|schema cache/i.test(first.error.message ?? '')) throw first.error
+  const { error } = await supabase.from('matches').update({
+    status: patch.status,
+    approved_at: patch.approved_at ?? null,
+  }).eq('id', matchId)
+  if (error) throw error
+}
+
+export async function wipeCloudChats() {
+  if (!supabase) return
+  const { error } = await supabase.rpc('wipe_my_chat_messages')
+  if (error) throw error
+}
+
 export async function insertCloudMessage(msg: ChatMessage): Promise<{ via: 'rpc' | 'row'; id: string }> {
   if (!supabase || !isUuid(msg.matchId)) throw new Error('no_cloud')
   const rpc = await supabase.rpc('send_chat_message', {
     p_match_id: msg.matchId,
     p_body: msg.body,
+    p_id: msg.id,
   })
   if (!rpc.error && rpc.data) return { via: 'rpc', id: String(rpc.data) }
-  const { data, error } = await supabase
-    .from('messages')
-    .insert({
-      id: msg.id,
-      match_id: msg.matchId,
-      sender_id: msg.senderId,
-      body: msg.body,
-    })
-    .select('id')
-    .maybeSingle()
-  if (error) throw error
-  return { via: 'row', id: (data?.id as string) ?? msg.id }
+  const { error } = await supabase.from('messages').insert({
+    id: msg.id,
+    match_id: msg.matchId,
+    sender_id: msg.senderId,
+    body: msg.body,
+  })
+  if (!error) return { via: 'row', id: msg.id }
+  if (/duplicate|unique/i.test(error.message ?? '')) return { via: 'row', id: msg.id }
+  throw error
 }
 
 export async function insertCloudNotification(userId: string, matchId: string | undefined, type: string, body: string) {

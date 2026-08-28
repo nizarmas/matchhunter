@@ -5,27 +5,60 @@ export function pairChannelName(a: string, b: string) {
   return `mh-pair-${[a, b].sort().join('-')}`
 }
 
-export function mergeChatMessages(existing: ChatMessage[], incoming: ChatMessage[]) {
-  if (incoming.length === 0) return existing
-  const map = new Map(existing.map((m) => [m.id, m]))
-  let changed = false
-  for (const msg of incoming) {
-    if (map.has(msg.id)) continue
-    const dup = [...map.values()].find(
-      (m) =>
-        m.senderId === msg.senderId &&
-        m.matchId === msg.matchId &&
-        m.body === msg.body &&
-        Math.abs(Date.parse(m.createdAt) - Date.parse(msg.createdAt)) < 20000,
-    )
-    if (dup) {
-      map.delete(dup.id)
-      changed = true
+function sameBubble(a: ChatMessage, b: ChatMessage) {
+  if (a.senderId !== b.senderId) return false
+  if (a.body.trim() !== b.body.trim()) return false
+  return Math.abs(Date.parse(a.createdAt) - Date.parse(b.createdAt)) < 10 * 60 * 1000
+}
+
+export function dedupeChatMessages(list: ChatMessage[]) {
+  if (list.length < 2) return list
+  const sorted = [...list].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+  const kept: ChatMessage[] = []
+  const seenId = new Set<string>()
+  for (const msg of sorted) {
+    if (seenId.has(msg.id)) continue
+    const dupAt = kept.findIndex((m) => sameBubble(m, msg))
+    if (dupAt >= 0) {
+      const prev = kept[dupAt]
+      kept[dupAt] = {
+        ...prev,
+        createdAt: prev.createdAt <= msg.createdAt ? prev.createdAt : msg.createdAt,
+      }
+      seenId.add(msg.id)
+      continue
     }
-    map.set(msg.id, msg)
-    changed = true
+    seenId.add(msg.id)
+    kept.push(msg)
   }
-  return changed ? [...map.values()] : existing
+  return kept
+}
+
+export function mergeChatMessages(existing: ChatMessage[], incoming: ChatMessage[]) {
+  if (incoming.length === 0) return dedupeChatMessages(existing)
+  const map = new Map(existing.map((m) => [m.id, m]))
+  for (const msg of incoming) {
+    if (!map.has(msg.id)) map.set(msg.id, msg)
+  }
+  const next = dedupeChatMessages([...map.values()])
+  return next
+}
+
+export function reconcileCloudMessages(local: ChatMessage[], cloud: ChatMessage[]) {
+  const cloudIds = new Set(cloud.map((m) => m.id))
+  const pending = local.filter((m) => {
+    if (cloudIds.has(m.id)) return false
+    const age = Date.now() - Date.parse(m.createdAt)
+    return Number.isFinite(age) && age >= 0 && age < 20_000
+  })
+  return mergeChatMessages(cloud, pending)
+}
+
+export function dropPairChat(messages: ChatMessage[], matches: Match[], by: string) {
+  const dropIds = new Set(
+    matches.filter((m) => m.userId === by || m.candidateId === by).map((m) => m.id),
+  )
+  return messages.filter((m) => m.senderId !== by && !dropIds.has(m.matchId))
 }
 
 export function threadMatchIds(
