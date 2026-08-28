@@ -103,6 +103,12 @@ export function chattingIds(matches: Match[], me: string) {
   return ids
 }
 
+export function pairIsOpen(matches: Match[], me: string, other: string) {
+  return pairMatches(matches, me, other).some(
+    (m) => m.status === 'selected_and_paid' || m.status === 'partner_approved',
+  )
+}
+
 export function overlapsKnown(
   person: Profile,
   knownIds: Set<string>,

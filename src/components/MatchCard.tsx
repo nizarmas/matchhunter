@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { OnlineBadge } from './OnlineBadge'
 import { useApp } from '../context/AppContext'
 import type { Match } from '../lib/types'
@@ -56,11 +56,8 @@ export function MatchCard({ match }: { match: Match }) {
           <PendingActions matchId={match.id} />
         )}
         {match.status === 'selected_and_paid' && (
-          <div className="space-y-2">
-            <div className="rounded-2xl bg-mist py-3 text-center text-sm font-semibold text-ink/70">
-              {statusLabel}
-            </div>
-            <DemoApproveButton matchId={match.id} />
+          <div className="rounded-2xl bg-mist py-3 text-center text-sm font-semibold text-ink/70">
+            {statusLabel}
           </div>
         )}
         {match.status === 'partner_approved' && (
@@ -84,12 +81,16 @@ export function MatchCard({ match }: { match: Match }) {
 
 function PendingActions({ matchId }: { matchId: string }) {
   const { t, hasMembership, sendRequest } = useApp()
+  const nav = useNavigate()
   return (
     <div className="grid gap-2">
       {hasMembership ? (
         <button
           type="button"
-          onClick={() => sendRequest(matchId)}
+          onClick={() => {
+            sendRequest(matchId)
+            nav('/app/approvals')
+          }}
           className="w-full rounded-2xl bg-wine py-3 text-sm font-bold text-paper"
         >
           {t.sendRequest}
@@ -122,21 +123,6 @@ function RejectButton({ matchId }: { matchId: string }) {
       className="w-full rounded-2xl border border-mist py-2 text-sm font-semibold text-ink/60"
     >
       {t.reject}
-    </button>
-  )
-}
-
-function DemoApproveButton({ matchId }: { matchId: string }) {
-  const { demoApprove, lang } = useApp()
-  const label =
-    lang === 'he' ? 'סימולציית אישור הצד השני' : lang === 'ar' ? 'محاكاة موافقة الطرف الآخر' : 'Simulate partner approval'
-  return (
-    <button
-      type="button"
-      onClick={() => demoApprove(matchId)}
-      className="w-full rounded-2xl border border-dashed border-olive/40 py-2 text-xs font-semibold text-olive"
-    >
-      {label}
     </button>
   )
 }

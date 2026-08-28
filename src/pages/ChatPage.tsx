@@ -26,7 +26,9 @@ export function ChatPage() {
     return threadMatchIds(allMatches, messages, user.id, other, profileById)
   }, [allMatches, messages, user, other, profileById])
   const threadKey = [...threadIds].sort().join('|')
-  const unreadHere = notifications.filter((n) => n.type === 'message' && !n.read && n.matchId && threadIds.has(n.matchId)).length
+  const unreadHere = notifications.filter(
+    (n) => (n.type === 'message' || n.type === 'approved') && !n.read && n.matchId && threadIds.has(n.matchId),
+  ).length
 
   const thread = useMemo(
     () =>

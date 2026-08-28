@@ -156,7 +156,7 @@ export async function markCloudMatchMessagesRead(userId: string, matchId: string
     .update({ read: true })
     .eq('user_id', userId)
     .eq('match_id', matchId)
-    .eq('type', 'message')
+    .in('type', ['message', 'approved'])
     .eq('read', false)
 }
 

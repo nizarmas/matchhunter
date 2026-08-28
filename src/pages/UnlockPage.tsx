@@ -25,7 +25,7 @@ export function UnlockPage() {
       setStripeBusy(false)
       if (error || !data?.paid) return
       payForMatch(matchId, sessionId, 'stripe')
-      nav('/app', { replace: true })
+      nav('/app/approvals', { replace: true })
     })
     return () => {
       dead = true
@@ -49,7 +49,7 @@ export function UnlockPage() {
         <p className="mt-2 text-ink/65">{t.paidHint}</p>
         <button
           type="button"
-          onClick={() => nav(match.status === 'partner_approved' ? `/app/chat/${match.id}` : '/app')}
+          onClick={() => nav(match.status === 'partner_approved' ? `/app/chat/${match.id}` : '/app/approvals')}
           className="mt-6 rounded-2xl bg-wine px-5 py-3 font-bold text-paper"
         >
           {t.continue}
@@ -68,7 +68,7 @@ export function UnlockPage() {
           type="button"
           onClick={() => {
             sendRequest(match.id)
-            nav('/app')
+            nav('/app/approvals')
           }}
           className="mt-6 w-full rounded-2xl bg-wine py-3 font-bold text-paper"
         >
@@ -91,7 +91,7 @@ export function UnlockPage() {
           matchId={match.id}
           onPaid={(id, gateway) => {
             payForMatch(match.id, id, gateway)
-            nav('/app')
+            nav('/app/approvals')
           }}
         />
       </div>

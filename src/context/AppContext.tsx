@@ -23,7 +23,7 @@ import { isOffensive } from '../lib/moderation'
 import { DEFAULT_PAYMENT_SETTINGS, type PaymentSettings } from '../lib/payments'
 import { curateMatches } from '../lib/matching'
 import { mergeChatMessages, messageFromRow, pairChannelName } from '../lib/chatLive'
-import { chattingIds, engagedIds, otherParty, overlapsKnown, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
+import { chattingIds, engagedIds, involvesPair, otherParty, overlapsKnown, pairIsOpen, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
 import { SEED_PROFILES } from '../lib/seed'
 import { holdInbox, isInboxHeld, isLiveMatch, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
@@ -111,6 +111,7 @@ type AppCtx = {
   matches: Match[]
   allMatches: Match[]
   incoming: Match[]
+  outgoingWaiting: Match[]
   notifications: AppNotification[]
   messages: ChatMessage[]
   register: (name: string, phone: string, email?: string, password?: string) => Promise<Profile>
@@ -123,7 +124,6 @@ type AppCtx = {
   hasMembership: boolean
   sendRequest: (matchId: string) => void
   payForMatch: (matchId: string, gatewayId: string, gateway: Transaction['gateway']) => void
-  demoApprove: (matchId: string) => void
   decideIncoming: (matchId: string, approve: boolean, share?: { email: boolean; phone: boolean }) => void
   sendMessage: (matchId: string, body: string) => Promise<'ok' | 'warned' | 'blocked' | 'failed'>
   isAdmin: boolean
@@ -265,7 +265,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (msg.senderId === other) openIds.add(msg.matchId)
         }
         const notifications = s.notifications.map((n) =>
-          n.userId === uid && n.type === 'message' && n.matchId && openIds.has(n.matchId)
+          n.userId === uid && (n.type === 'message' || n.type === 'approved') && n.matchId && openIds.has(n.matchId)
             ? { ...n, read: true }
             : n,
         )
@@ -304,7 +304,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               if (msg.senderId === other) openIds.add(msg.matchId)
             }
             for (const [id, n] of noteMap) {
-              if (n.userId === uid && n.type === 'message' && n.matchId && openIds.has(n.matchId) && !n.read) {
+              if (n.userId === uid && (n.type === 'message' || n.type === 'approved') && n.matchId && openIds.has(n.matchId) && !n.read) {
                 noteMap.set(id, { ...n, read: true })
                 void markCloudMatchMessagesRead(uid, n.matchId)
               }
@@ -404,8 +404,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return uniqueByOther(paid, me, byId, store.messages)
   }, [store.matches, store.currentUserId, store.profiles, store.messages])
 
+  const outgoingWaiting = useMemo(() => {
+    const me = store.currentUserId
+    if (!me) return []
+    const byId = (id: string) => store.profiles.find((p) => p.id === id)
+    const chatting = chattingIds(store.matches, me)
+    const sent = store.matches.filter((m) => {
+      if (m.userId !== me || m.status !== 'selected_and_paid') return false
+      const person = byId(m.candidateId)
+      return person ? !overlapsKnown(person, chatting, byId) : !chatting.has(m.candidateId)
+    })
+    return uniqueByOther(sent, me, byId, store.messages)
+  }, [store.matches, store.currentUserId, store.profiles, store.messages])
+
   const unreadChat = store.notifications.filter((n) => {
-    if (n.userId !== store.currentUserId || n.type !== 'message' || n.read) return false
+    if (n.userId !== store.currentUserId || n.read) return false
+    if (n.type !== 'message' && n.type !== 'approved') return false
     if (!openChatOtherId || !store.currentUserId || !n.matchId) return true
     const match = store.matches.find((m) => m.id === n.matchId)
     if (match && otherParty(match, store.currentUserId) === openChatOtherId) return false
@@ -441,6 +455,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     matches,
     allMatches: store.matches,
     incoming,
+    outgoingWaiting,
     inboxBadge,
     setOpenChat,
     notifications: store.notifications.filter((n) => n.userId === store.currentUserId),
@@ -580,6 +595,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!user) return
       const match = store.matches.find((m) => m.id === matchId)
       if (!match || match.status !== 'pending') return
+      if (pairIsOpen(store.matches, user.id, match.candidateId)) return
       const paid: Match = { ...match, status: 'selected_and_paid', paidAt: new Date().toISOString() }
       const note: AppNotification = {
         id: crypto.randomUUID(),
@@ -590,12 +606,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
         read: false,
         createdAt: new Date().toISOString(),
       }
-      void upsertCloudMatches([paid])
+      const reversePending = store.matches.filter(
+        (m) => m.userId === match.candidateId && m.candidateId === user.id && m.status === 'pending',
+      )
+      void upsertCloudMatches([paid, ...reversePending.map((m) => ({ ...m, status: 'declined' as const }))])
       void insertCloudNotification(match.candidateId, matchId, 'interest', user.name)
       patch((s) => ({
         ...s,
         notifications: [...s.notifications, note],
-        matches: s.matches.map((m) => (m.id === matchId ? paid : m)),
+        matches: s.matches.map((m) => {
+          if (m.id === matchId) return paid
+          if (m.userId === match.candidateId && m.candidateId === user.id && m.status === 'pending') {
+            return { ...m, status: 'declined' as const }
+          }
+          return m
+        }),
       }))
     },
     payForMatch: (matchId, gatewayId, gateway) => {
@@ -616,9 +641,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         createdAt: new Date().toISOString(),
       }
       const match = store.matches.find((m) => m.id === matchId)
-      const paid = match ? { ...match, status: 'selected_and_paid' as const, paidAt: new Date().toISOString() } : null
+      const sendIt = match && match.status === 'pending' && !pairIsOpen(store.matches, user.id, match.candidateId)
+      const paid = sendIt ? { ...match, status: 'selected_and_paid' as const, paidAt: new Date().toISOString() } : null
       const note: AppNotification | null =
-        match && paid
+        sendIt && match && paid
           ? {
               id: crypto.randomUUID(),
               userId: match.candidateId,
@@ -629,40 +655,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
               createdAt: new Date().toISOString(),
             }
           : null
+      const reversePending =
+        sendIt && match
+          ? store.matches.filter(
+              (m) => m.userId === match.candidateId && m.candidateId === user.id && m.status === 'pending',
+            )
+          : []
       void upsertCloudProfile(updated)
       void insertCloudTransaction(tx)
-      if (paid) void upsertCloudMatches([paid])
-      if (match) void insertCloudNotification(match.candidateId, matchId, 'interest', user.name)
+      if (paid) void upsertCloudMatches([paid, ...reversePending.map((m) => ({ ...m, status: 'declined' as const }))])
+      if (sendIt && match) void insertCloudNotification(match.candidateId, matchId, 'interest', user.name)
       patch((s) => ({
         ...s,
         profiles: s.profiles.map((p) => (p.id === user.id ? updated : p)),
         transactions: [...s.transactions, tx],
         notifications: note ? [...s.notifications, note] : s.notifications,
-        matches: paid ? s.matches.map((m) => (m.id === matchId ? paid : m)) : s.matches,
-      }))
-    },
-    demoApprove: (matchId) => {
-      patch((s) => {
-        const next = s.matches.map((m) =>
-          m.id === matchId
-            ? {
-                ...m,
-                status: 'partner_approved' as const,
-                approvedAt: new Date().toISOString(),
-                shareEmail: false,
-                sharePhone: false,
+        matches: paid
+          ? s.matches.map((m) => {
+              if (m.id === matchId) return paid
+              if (match && m.userId === match.candidateId && m.candidateId === user.id && m.status === 'pending') {
+                return { ...m, status: 'declined' as const }
               }
-            : m,
-        )
-        const found = next.find((m) => m.id === matchId)
-        if (found) void upsertCloudMatches([found])
-        return { ...s, matches: next }
-      })
+              return m
+            })
+          : s.matches,
+      }))
     },
     decideIncoming: (matchId, approve, share) => {
       if (!user) return
       patch((s) => {
         const match = s.matches.find((m) => m.id === matchId)
+        const otherId = match ? match.userId : null
         const note: AppNotification | null = match
           ? {
               id: crypto.randomUUID(),
@@ -674,19 +697,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
               createdAt: new Date().toISOString(),
             }
           : null
-        const next = s.matches.map((m) =>
-          m.id === matchId
-            ? {
-                ...m,
-                status: (approve ? 'partner_approved' : 'declined') as Match['status'],
-                approvedAt: approve ? new Date().toISOString() : m.approvedAt,
-                shareEmail: approve ? Boolean(share?.email) : false,
-                sharePhone: approve ? Boolean(share?.phone) : false,
-              }
-            : m,
-        )
+        const next = s.matches.map((m) => {
+          if (m.id === matchId) {
+            return {
+              ...m,
+              status: (approve ? 'partner_approved' : 'declined') as Match['status'],
+              approvedAt: approve ? new Date().toISOString() : m.approvedAt,
+              shareEmail: approve ? Boolean(share?.email) : false,
+              sharePhone: approve ? Boolean(share?.phone) : false,
+            }
+          }
+          if (
+            approve &&
+            otherId &&
+            (m.status === 'pending' || m.status === 'selected_and_paid') &&
+            ((m.userId === user.id && m.candidateId === otherId) || (m.userId === otherId && m.candidateId === user.id))
+          ) {
+            return {
+              ...m,
+              status: 'partner_approved' as const,
+              approvedAt: new Date().toISOString(),
+            }
+          }
+          return m
+        })
         const found = next.find((m) => m.id === matchId)
-        if (found) void upsertCloudMatches([found])
+        const extras = otherId
+          ? next.filter((m) => m.id !== matchId && involvesPair(m, user.id, otherId) && m.status === 'partner_approved')
+          : []
+        if (found) void upsertCloudMatches([found, ...extras])
         if (match) void insertCloudNotification(match.userId, matchId, approve ? 'approved' : 'declined', user.name)
         return {
           ...s,
@@ -868,7 +907,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       patch((s) => ({
         ...s,
         notifications: s.notifications.map((n) =>
-          n.userId === user.id && n.matchId === matchId && n.type === 'message' ? { ...n, read: true } : n,
+          n.userId === user.id && n.matchId === matchId && (n.type === 'message' || n.type === 'approved')
+            ? { ...n, read: true }
+            : n,
         ),
       }))
     },
