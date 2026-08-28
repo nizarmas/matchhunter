@@ -1,0 +1,283 @@
+import { supabase } from './supabase'
+import type { AppNotification, ChatMessage, Match, MatchStatus, Profile, Questionnaire, Transaction } from './types'
+
+export function isUuid(id: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+}
+
+type ProfileRow = {
+  id: string
+  phone: string | null
+  email: string | null
+  name: string
+  photo: string | null
+  gender: Questionnaire['gender'] | null
+  looking_for: Questionnaire['lookingFor'] | null
+  age: number | null
+  partner_age_min: number | null
+  partner_age_max: number | null
+  region: Questionnaire['region'] | null
+  city: string | null
+  faith: Questionnaire['faith'] | null
+  open_to_other_faiths: boolean | null
+  goal: Questionnaire['goal'] | null
+  kids: Questionnaire['kids'] | null
+  languages: string[] | null
+  bio: string | null
+  questionnaire: Questionnaire | Record<string, unknown> | null
+  onboarding_complete: boolean | null
+  membership_until: string | null
+  chat_warnings: number | null
+  chat_blocked: boolean | null
+  account_blocked: boolean | null
+  created_at: string
+}
+
+type MatchRow = {
+  id: string
+  user_id: string
+  candidate_id: string
+  score: number | null
+  reasons: string[] | null
+  status: MatchStatus
+  paid_at: string | null
+  approved_at: string | null
+  created_at: string
+}
+
+const fallbackQ = (row: ProfileRow): Questionnaire => {
+  const q = (row.questionnaire ?? {}) as Partial<Questionnaire>
+  return {
+    gender: q.gender ?? row.gender ?? 'female',
+    lookingFor: q.lookingFor ?? row.looking_for ?? 'male',
+    age: q.age ?? row.age ?? 28,
+    partnerAgeMin: q.partnerAgeMin ?? row.partner_age_min ?? 25,
+    partnerAgeMax: q.partnerAgeMax ?? row.partner_age_max ?? 40,
+    region: q.region ?? row.region ?? 'jerusalem',
+    city: q.city ?? row.city ?? '',
+    faith: q.faith ?? row.faith ?? 'jewish_traditional',
+    openToOtherFaiths: q.openToOtherFaiths ?? row.open_to_other_faiths ?? false,
+    goal: q.goal ?? row.goal ?? 'marriage',
+    kids: q.kids ?? row.kids ?? 'open',
+    languages: (q.languages as Questionnaire['languages']) ?? (row.languages as Questionnaire['languages']) ?? ['he'],
+    bio: q.bio ?? row.bio ?? '',
+  }
+}
+
+export function rowToProfile(row: ProfileRow): Profile {
+  return {
+    id: row.id,
+    phone: row.phone ?? '',
+    email: row.email ?? undefined,
+    name: row.name,
+    photo: row.photo ?? undefined,
+    questionnaire: fallbackQ(row),
+    onboardingComplete: Boolean(row.onboarding_complete),
+    membershipUntil: row.membership_until ?? undefined,
+    chatWarnings: row.chat_warnings ?? 0,
+    chatBlocked: Boolean(row.chat_blocked),
+    accountBlocked: Boolean(row.account_blocked),
+    createdAt: row.created_at,
+  }
+}
+
+export function rowToMatch(row: MatchRow): Match {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    candidateId: row.candidate_id,
+    score: row.score ?? 0,
+    reasons: row.reasons ?? [],
+    status: row.status,
+    createdAt: row.created_at,
+    paidAt: row.paid_at ?? undefined,
+    approvedAt: row.approved_at ?? undefined,
+  }
+}
+
+export async function fetchCloudProfiles(): Promise<Profile[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('profiles').select('*')
+  if (error) throw error
+  return ((data ?? []) as ProfileRow[]).map(rowToProfile)
+}
+
+export async function fetchCloudMatches(userId: string): Promise<Match[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('matches')
+    .select('*')
+    .or(`user_id.eq.${userId},candidate_id.eq.${userId}`)
+  if (error) throw error
+  return ((data ?? []) as MatchRow[]).map(rowToMatch)
+}
+
+export async function fetchCloudMatchesAll(): Promise<Match[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('matches').select('*')
+  if (error || !data) return []
+  return (data as MatchRow[]).map(rowToMatch)
+}
+
+export async function fetchCloudNotifications(userId: string): Promise<AppNotification[]> {
+  if (!supabase || !isUuid(userId)) return []
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+  if (error || !data) return []
+  return data.map((row) => ({
+    id: row.id as string,
+    userId: row.user_id as string,
+    matchId: (row.match_id as string | null) ?? undefined,
+    type: (row.type as AppNotification['type']) ?? 'message',
+    body: (row.body as string) ?? '',
+    read: Boolean(row.read),
+    createdAt: row.created_at as string,
+  }))
+}
+
+export async function markCloudNotificationsRead(userId: string) {
+  if (!supabase || !isUuid(userId)) return
+  await supabase.from('notifications').update({ read: true }).eq('user_id', userId).eq('read', false)
+}
+
+export async function fetchCloudMessages(matchId: string): Promise<ChatMessage[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('match_id', matchId)
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return ((data ?? []) as { id: string; match_id: string; sender_id: string; body: string; created_at: string }[]).map(
+    (m) => ({
+      id: m.id,
+      matchId: m.match_id,
+      senderId: m.sender_id,
+      body: m.body,
+      createdAt: m.created_at,
+    }),
+  )
+}
+
+export async function upsertCloudProfile(p: Profile) {
+  if (!supabase) return
+  const q = p.questionnaire
+  const payload = {
+    id: p.id,
+    phone: p.phone,
+    email: p.email ?? null,
+    name: p.name,
+    photo: p.photo ?? null,
+    gender: q.gender,
+    looking_for: q.lookingFor,
+    age: q.age,
+    partner_age_min: q.partnerAgeMin,
+    partner_age_max: q.partnerAgeMax,
+    region: q.region,
+    city: q.city,
+    faith: q.faith,
+    open_to_other_faiths: q.openToOtherFaiths,
+    goal: q.goal,
+    kids: q.kids,
+    languages: q.languages,
+    bio: q.bio,
+    questionnaire: q,
+    onboarding_complete: p.onboardingComplete,
+    membership_until: p.membershipUntil ?? null,
+    chat_warnings: p.chatWarnings ?? 0,
+    chat_blocked: p.chatBlocked ?? false,
+    account_blocked: p.accountBlocked ?? false,
+  }
+  const first = await supabase.from('profiles').upsert(payload)
+  if (!first.error) return
+  const {
+    membership_until: _until,
+    chat_warnings: _w,
+    chat_blocked: _b,
+    account_blocked: _ab,
+    ...legacy
+  } = payload
+  void _until
+  void _w
+  void _b
+  void _ab
+  const { error } = await supabase.from('profiles').upsert(legacy)
+  if (error) throw error
+}
+
+export async function upsertCloudMatches(matches: Match[]) {
+  if (!supabase) return
+  const rows = matches.filter((m) => isUuid(m.candidateId) && isUuid(m.userId) && isUuid(m.id))
+  if (rows.length === 0) return
+  const { error } = await supabase.from('matches').upsert(
+    rows.map((m) => ({
+      id: m.id,
+      user_id: m.userId,
+      candidate_id: m.candidateId,
+      score: m.score,
+      reasons: m.reasons,
+      status: m.status,
+      paid_at: m.paidAt ?? null,
+      approved_at: m.approvedAt ?? null,
+    })),
+  )
+  if (error) throw error
+}
+
+export async function insertCloudTransaction(tx: Transaction) {
+  if (!supabase) return
+  if (tx.matchId && !isUuid(tx.matchId)) return
+  await supabase.from('transactions').insert({
+    id: tx.id,
+    user_id: tx.userId,
+    match_id: tx.matchId && isUuid(tx.matchId) ? tx.matchId : null,
+    amount: tx.amount,
+    currency: tx.currency,
+    gateway: tx.gateway,
+    payment_gateway_id: tx.paymentGatewayId,
+    status: tx.status,
+  })
+}
+
+export async function insertCloudMessage(msg: ChatMessage) {
+  if (!supabase || !isUuid(msg.matchId)) return
+  const { error } = await supabase.from('messages').insert({
+    id: msg.id,
+    match_id: msg.matchId,
+    sender_id: msg.senderId,
+    body: msg.body,
+  })
+  if (error) throw error
+}
+
+export async function insertCloudNotification(userId: string, matchId: string | undefined, type: string, body: string) {
+  if (!supabase || !isUuid(userId)) return
+  await supabase.from('notifications').insert({
+    user_id: userId,
+    match_id: matchId && isUuid(matchId) ? matchId : null,
+    type,
+    body,
+  })
+}
+
+export async function fetchCloudTransactions(): Promise<Transaction[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('transactions').select('*')
+  if (error || !data) return []
+  return data.map((row) => ({
+    id: row.id as string,
+    userId: row.user_id as string,
+    matchId: (row.match_id as string | null) ?? undefined,
+    amount: Number(row.amount),
+    currency: 'ILS' as const,
+    gateway: (row.gateway as Transaction['gateway']) ?? 'demo',
+    paymentGatewayId: (row.payment_gateway_id as string) ?? '',
+    status: row.status as Transaction['status'],
+    createdAt: row.created_at as string,
+  }))
+}
+
+export { supabase }

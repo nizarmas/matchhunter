@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --font-he: "Assistant", "Segoe UI", sans-serif;
+  --font-ar: "Cairo", "Segoe UI", sans-serif;
+  --font-en: "Outfit", "Segoe UI", sans-serif;
+  --font-display: "Fraunces", "Georgia", serif;
+  --color-paper: #f3eadf;
+  --color-ink: #1c1612;
+  --color-wine: #6f2d2d;
+  --color-wine-deep: #4a1c1c;
+  --color-gold: #b08a3e;
+  --color-olive: #3d4a38;
+  --color-card: #fffaf3;
+  --color-mist: #e7dccb;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-he);
+}
+
+html[lang="ar"] body {
+  font-family: var(--font-ar);
+}
+
+html[lang="en"] body {
+  font-family: var(--font-en);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+}
+
+.noise {
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(176, 138, 62, 0.18), transparent 36%),
+    radial-gradient(circle at 88% 0%, rgba(111, 45, 45, 0.12), transparent 32%);
+}
+
+.card-lift {
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+.card-lift:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 40px rgba(28, 22, 18, 0.1);
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}

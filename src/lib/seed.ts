@@ -1,0 +1,287 @@
+import type { Faith, Lang, Profile, Questionnaire } from './types'
+
+const now = () => new Date().toISOString()
+
+function q(partial: Questionnaire): Questionnaire {
+  return partial
+}
+
+export const SEED_PROFILES: Profile[] = [
+  {
+    id: 'seed-noa',
+    name: 'נועה',
+    phone: '0500001001',
+    photo: 'נ',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 28, partnerAgeMin: 27, partnerAgeMax: 38,
+      region: 'tel_aviv', city: 'תל אביב', faith: 'jewish_secular', openToOtherFaiths: false,
+      goal: 'serious', kids: 'want', languages: ['he', 'en'], bio: 'אוהבת ים, ספרים ושיחות עד מאוחר.',
+    }),
+  },
+  {
+    id: 'seed-yosef',
+    name: 'יוסף',
+    phone: '0500001002',
+    photo: 'י',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 32, partnerAgeMin: 24, partnerAgeMax: 36,
+      region: 'jerusalem', city: 'ירושלים', faith: 'jewish_traditional', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['he', 'en'], bio: 'ירושלמי, שבת עם המשפחה, טיולים בשוק.',
+    }),
+  },
+  {
+    id: 'seed-shira',
+    name: 'שירה',
+    phone: '0500001003',
+    photo: 'ש',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 25, partnerAgeMin: 24, partnerAgeMax: 34,
+      region: 'center', city: 'מודיעין', faith: 'jewish_religious', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['he'], bio: 'מחפשת בית חם ושותפות אמיתית.',
+    }),
+  },
+  {
+    id: 'seed-david',
+    name: 'דוד',
+    phone: '0500001004',
+    photo: 'ד',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 41, partnerAgeMin: 30, partnerAgeMax: 45,
+      region: 'haifa', city: 'חיפה', faith: 'jewish_secular', openToOtherFaiths: true,
+      goal: 'serious', kids: 'have', languages: ['he', 'en'], bio: 'אבא, אוהב לבשל ומסלולי כרמל.',
+    }),
+  },
+  {
+    id: 'seed-rivka',
+    name: 'רבקה',
+    phone: '0500001005',
+    photo: 'ר',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 22, partnerAgeMin: 22, partnerAgeMax: 28,
+      region: 'west_bank', city: 'ביתר עילית', faith: 'jewish_haredi', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['he'], bio: 'פשוטה, שמחה, מחפשת ירא שמיים.',
+    }),
+  },
+  {
+    id: 'seed-ariel',
+    name: 'אריאל',
+    phone: '0500001006',
+    photo: 'א',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 35, partnerAgeMin: 26, partnerAgeMax: 37,
+      region: 'west_bank', city: 'אריאל', faith: 'jewish_traditional', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'open', languages: ['he', 'en'], bio: 'הייטק ביום, שבת בגוש. רציני ושקט.',
+    }),
+  },
+  {
+    id: 'seed-lina',
+    name: 'لينا',
+    phone: '0500001007',
+    photo: 'ل',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 27, partnerAgeMin: 26, partnerAgeMax: 36,
+      region: 'jerusalem', city: 'القدس', faith: 'muslim', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['ar', 'he'], bio: 'معلمة، أحب القهوة والكتب والمشي في البلدة القديمة.',
+    }),
+  },
+  {
+    id: 'seed-ahmad',
+    name: 'أحمد',
+    phone: '0500001008',
+    photo: 'أ',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 30, partnerAgeMin: 23, partnerAgeMax: 32,
+      region: 'north', city: 'الناصرة', faith: 'muslim', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['ar', 'he', 'en'], bio: 'مهندس من الناصرة، عائلة أولاً.',
+    }),
+  },
+  {
+    id: 'seed-maria',
+    name: 'ماريا',
+    phone: '0500001009',
+    photo: 'م',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 29, partnerAgeMin: 28, partnerAgeMax: 40,
+      region: 'west_bank', city: 'بيت لحم', faith: 'christian', openToOtherFaiths: true,
+      goal: 'serious', kids: 'open', languages: ['ar', 'en'], bio: 'من بيت لحم، أحب الفن والسفر القريب.',
+    }),
+  },
+  {
+    id: 'seed-samir',
+    name: 'سامر',
+    phone: '0500001010',
+    photo: 'س',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 34, partnerAgeMin: 26, partnerAgeMax: 36,
+      region: 'haifa', city: 'حيفا', faith: 'druze', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['ar', 'he'], bio: 'حيفاوي، جبل الكرمل والبيت أهم من الضجيج.',
+    }),
+  },
+  {
+    id: 'seed-daniel',
+    name: 'Daniel',
+    phone: '0500001011',
+    photo: 'D',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 31, partnerAgeMin: 25, partnerAgeMax: 35,
+      region: 'tel_aviv', city: 'Tel Aviv', faith: 'jewish_secular', openToOtherFaiths: true,
+      goal: 'serious', kids: 'open', languages: ['en', 'he'], bio: 'New in Israel, looking for something real — not endless chat.',
+    }),
+  },
+  {
+    id: 'seed-rachel',
+    name: 'Rachel',
+    phone: '0500001012',
+    photo: 'R',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 26, partnerAgeMin: 26, partnerAgeMax: 36,
+      region: 'jerusalem', city: 'Jerusalem', faith: 'jewish_traditional', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['en', 'he'], bio: 'Olah, Shabbat dinners and hiking around Jerusalem.',
+    }),
+  },
+  {
+    id: 'seed-tamar',
+    name: 'תמר',
+    phone: '0500001013',
+    photo: 'ת',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 36, partnerAgeMin: 34, partnerAgeMax: 48,
+      region: 'sharon', city: 'הרצליה', faith: 'jewish_secular', openToOtherFaiths: true,
+      goal: 'serious', kids: 'have', languages: ['he', 'en'], bio: 'עצמאית, אמא, מחפשת שותף לחיים לא לפרויקט.',
+    }),
+  },
+  {
+    id: 'seed-moshe',
+    name: 'משה',
+    phone: '0500001014',
+    photo: 'מ',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 24, partnerAgeMin: 20, partnerAgeMax: 26,
+      region: 'west_bank', city: 'גוש עציון', faith: 'jewish_religious', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'want', languages: ['he'], bio: 'התיישבות, לימוד, ולב פתוח.',
+    }),
+  },
+  {
+    id: 'seed-nira',
+    name: 'נירה',
+    phone: '0500001015',
+    photo: 'נ',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 53, partnerAgeMin: 48, partnerAgeMax: 65,
+      region: 'center', city: 'פתח תקווה', faith: 'other', openToOtherFaiths: true,
+      goal: 'slowly', kids: 'have', languages: ['he'], bio: 'שקטה, אוהבת טיולים קצרים ושיחה בלי לחץ.',
+    }),
+  },
+  {
+    id: 'seed-dalia',
+    name: 'דליה',
+    phone: '0500001016',
+    photo: 'ד',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 57, partnerAgeMin: 50, partnerAgeMax: 68,
+      region: 'jerusalem', city: 'ירושלים', faith: 'jewish_traditional', openToOtherFaiths: true,
+      goal: 'serious', kids: 'have', languages: ['he', 'en'], bio: 'ירושלמית, משפחה ושבת, מחפשת שותפות בוגרת.',
+    }),
+  },
+  {
+    id: 'seed-orna',
+    name: 'אורנה',
+    phone: '0500001017',
+    photo: 'א',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 50, partnerAgeMin: 48, partnerAgeMax: 62,
+      region: 'tel_aviv', city: 'תל אביב', faith: 'jewish_secular', openToOtherFaiths: true,
+      goal: 'slowly', kids: 'open', languages: ['he', 'en'], bio: 'עצמאית, תרבות וים, בלי דרמות.',
+    }),
+  },
+  {
+    id: 'seed-avi',
+    name: 'אבי',
+    phone: '0500001018',
+    photo: 'א',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 56, partnerAgeMin: 45, partnerAgeMax: 60,
+      region: 'center', city: 'ראשון לציון', faith: 'other', openToOtherFaiths: true,
+      goal: 'slowly', kids: 'have', languages: ['he'], bio: 'רציני, רגוע, מחפש קשר בגובה העיניים.',
+    }),
+  },
+  {
+    id: 'seed-yossi',
+    name: 'יוסי',
+    phone: '0500001019',
+    photo: 'י',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'male', lookingFor: 'female', age: 59, partnerAgeMin: 48, partnerAgeMax: 62,
+      region: 'haifa', city: 'חיפה', faith: 'jewish_secular', openToOtherFaiths: true,
+      goal: 'serious', kids: 'have', languages: ['he', 'en'], bio: 'חיפה והכרמל, בישול ושיחות ארוכות.',
+    }),
+  },
+  {
+    id: 'seed-suha',
+    name: 'سهى',
+    phone: '0500001020',
+    photo: 'س',
+    onboardingComplete: true,
+    createdAt: now(),
+    questionnaire: q({
+      gender: 'female', lookingFor: 'male', age: 52, partnerAgeMin: 48, partnerAgeMax: 64,
+      region: 'jerusalem', city: 'القدس', faith: 'muslim', openToOtherFaiths: false,
+      goal: 'marriage', kids: 'have', languages: ['ar', 'he'], bio: 'هادئة، عائلة أولاً، من القدس.',
+    }),
+  },
+]
+
+export const FAITH_FAMILY: Record<Faith, string> = {
+  jewish_secular: 'jewish',
+  jewish_traditional: 'jewish',
+  jewish_religious: 'jewish',
+  jewish_haredi: 'jewish',
+  muslim: 'muslim',
+  christian: 'christian',
+  druze: 'druze',
+  other: 'other',
+}
+
+export const LANG_LABEL: Record<Lang, Record<Lang, string>> = {
+  he: { he: 'עברית', ar: 'العبرية', en: 'Hebrew' },
+  ar: { he: 'ערבית', ar: 'العربية', en: 'Arabic' },
+  en: { he: 'אנגלית', ar: 'الإنجليزية', en: 'English' },
+}
