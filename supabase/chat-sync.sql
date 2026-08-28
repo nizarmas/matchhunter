@@ -70,6 +70,27 @@ begin
   end if;
 
   select * into m from public.matches where id = p_match_id;
+  if not found
+     or (m.user_id is distinct from auth.uid() and m.candidate_id is distinct from auth.uid())
+     or m.status not in ('selected_and_paid', 'partner_approved') then
+    select * into m
+    from public.matches
+    where (user_id = auth.uid() or candidate_id = auth.uid())
+      and status in ('selected_and_paid', 'partner_approved')
+      and (
+        id = p_match_id
+        or exists (
+          select 1 from public.matches src
+          where src.id = p_match_id
+            and (
+              (src.user_id = matches.user_id and src.candidate_id = matches.candidate_id)
+              or (src.user_id = matches.candidate_id and src.candidate_id = matches.user_id)
+            )
+        )
+      )
+    order by case when status = 'partner_approved' then 0 else 1 end, created_at desc
+    limit 1;
+  end if;
   if not found then
     raise exception 'no_match';
   end if;
@@ -83,16 +104,17 @@ begin
   if m.status = 'selected_and_paid' then
     update public.matches
     set status = 'partner_approved', approved_at = coalesce(approved_at, now())
-    where id = p_match_id;
+    where id = m.id;
+    m.status := 'partner_approved';
   end if;
 
   msg_id := gen_random_uuid();
   insert into public.messages (id, match_id, sender_id, body)
-  values (msg_id, p_match_id, auth.uid(), trimmed);
+  values (msg_id, m.id, auth.uid(), trimmed);
 
   other := case when m.user_id = auth.uid() then m.candidate_id else m.user_id end;
   insert into public.notifications (user_id, match_id, type, body, read)
-  values (other, p_match_id, 'message', left(trimmed, 80), false);
+  values (other, m.id, 'message', left(trimmed, 80), false);
 
   return msg_id;
 end;

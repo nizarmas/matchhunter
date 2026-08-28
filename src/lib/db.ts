@@ -250,17 +250,37 @@ export async function upsertCloudMatches(matches: Match[]) {
     share_email: Boolean(m.shareEmail),
     share_phone: Boolean(m.sharePhone),
   }))
-  const { error } = await supabase.from('matches').upsert(payload)
-  if (!error) return
-  const missingShare = /share_email|share_phone|schema cache/i.test(error.message ?? '')
-  if (!missingShare) throw error
-  const { error: retry } = await supabase.from('matches').upsert(
-    payload.map(({ share_email, share_phone, ...rest }) => {
-      void share_email
-      void share_phone
-      return rest
-    }),
-  )
+
+  async function write(list: Array<Record<string, unknown> & { id: string }>) {
+    for (const row of list) {
+      const { id, ...rest } = row
+      const updated = await supabase!.from('matches').update(rest).eq('id', id).select('id')
+      if (updated.error) return updated.error
+      if (updated.data && updated.data.length > 0) continue
+      const inserted = await supabase!.from('matches').insert(row)
+      if (!inserted.error) continue
+      if (!/duplicate|unique/i.test(inserted.error.message ?? '')) return inserted.error
+      const byPair = await supabase!
+        .from('matches')
+        .update(rest)
+        .eq('user_id', row.user_id as string)
+        .eq('candidate_id', row.candidate_id as string)
+        .select('id')
+      if (byPair.error) return byPair.error
+    }
+    return null
+  }
+
+  const err = await write(payload)
+  if (!err) return
+  const missingShare = /share_email|share_phone|schema cache/i.test(err.message ?? '')
+  if (!missingShare) throw err
+  const stripped = payload.map(({ share_email, share_phone, ...rest }) => {
+    void share_email
+    void share_phone
+    return rest
+  })
+  const retry = await write(stripped)
   if (retry) throw retry
 }
 
@@ -286,14 +306,18 @@ export async function insertCloudMessage(msg: ChatMessage): Promise<{ via: 'rpc'
     p_body: msg.body,
   })
   if (!rpc.error && rpc.data) return { via: 'rpc', id: String(rpc.data) }
-  const { error } = await supabase.from('messages').insert({
-    id: msg.id,
-    match_id: msg.matchId,
-    sender_id: msg.senderId,
-    body: msg.body,
-  })
+  const { data, error } = await supabase
+    .from('messages')
+    .insert({
+      id: msg.id,
+      match_id: msg.matchId,
+      sender_id: msg.senderId,
+      body: msg.body,
+    })
+    .select('id')
+    .maybeSingle()
   if (error) throw error
-  return { via: 'row', id: msg.id }
+  return { via: 'row', id: (data?.id as string) ?? msg.id }
 }
 
 export async function insertCloudNotification(userId: string, matchId: string | undefined, type: string, body: string) {

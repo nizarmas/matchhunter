@@ -23,7 +23,7 @@ import { isOffensive } from '../lib/moderation'
 import { DEFAULT_PAYMENT_SETTINGS, type PaymentSettings } from '../lib/payments'
 import { curateMatches } from '../lib/matching'
 import { mergeChatMessages, messageFromRow, pairChannelName } from '../lib/chatLive'
-import { chattingIds, engagedIds, involvesPair, otherParty, overlapsKnown, pairIsOpen, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
+import { chattingIds, engagedIds, involvesPair, otherParty, overlapsKnown, pairIsOpen, pairMatches, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
 import { SEED_PROFILES } from '../lib/seed'
 import { holdInbox, isInboxHeld, isLiveMatch, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
@@ -800,33 +800,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const otherId = raw ? otherParty(raw, user.id) : null
       const canonical = otherId ? pickCanonicalMatch(store.matches, user.id, otherId, store.messages) : raw
       const match = canonical ?? raw
-      const targetId = match?.id ?? matchId
-      msg.matchId = targetId
+      const pairIds = otherId
+        ? pairMatches(store.matches, user.id, otherId)
+            .filter((m) => m.status === 'partner_approved' || m.status === 'selected_and_paid')
+            .map((m) => m.id)
+        : []
+      const targets = [...new Set([match?.id ?? matchId, matchId, ...pairIds])]
+      msg.matchId = targets[0]
       patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, [msg]) }))
       if (otherId) {
         void pairChannelsRef.current.get(otherId)?.send({ type: 'broadcast', event: 'msg', payload: msg })
       }
       try {
-        if (match) await upsertCloudMatches([match])
-        const saved = await insertCloudMessage(msg)
-        if (saved.id !== msg.id) {
-          const confirmed = { ...msg, id: saved.id }
-          patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, [confirmed]) }))
-          if (otherId) {
-            void pairChannelsRef.current.get(otherId)?.send({
-              type: 'broadcast',
-              event: 'msg',
-              payload: confirmed,
-            })
+        if (match) {
+          try {
+            await upsertCloudMatches([match])
+          } catch {
+            /* candidate cannot insert the match row; sending still allowed */
           }
         }
+        let saved: { via: 'rpc' | 'row'; id: string } | undefined
+        let lastError: unknown
+        for (const id of targets) {
+          msg.matchId = id
+          try {
+            saved = await insertCloudMessage(msg)
+            break
+          } catch (err) {
+            lastError = err
+          }
+        }
+        if (!saved) throw lastError ?? new Error('send_failed')
+        const confirmed = { ...msg, id: saved.id, matchId: msg.matchId }
+        patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, [confirmed]) }))
+        if (otherId) {
+          void pairChannelsRef.current.get(otherId)?.send({
+            type: 'broadcast',
+            event: 'msg',
+            payload: confirmed,
+          })
+        }
         if (saved.via === 'row' && otherId) {
-          await insertCloudNotification(otherId, targetId, 'message', msg.body.slice(0, 80))
+          await insertCloudNotification(otherId, confirmed.matchId, 'message', msg.body.slice(0, 80))
         }
         const cloudMsgs = await fetchVisibleCloudMessages()
         patch((s) => ({ ...s, messages: mergeChatMessages(s.messages, cloudMsgs) }))
         return 'ok'
       } catch {
+        patch((s) => ({ ...s, messages: s.messages.filter((m) => m.id !== msg.id) }))
         return 'failed'
       }
     },
