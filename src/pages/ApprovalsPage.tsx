@@ -3,25 +3,37 @@ import { Link } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { tPath } from '../i18n/translations'
 import { OnlineBadge } from '../components/OnlineBadge'
+import { otherParty, pairMatchesForPerson, uniqueByOther } from '../lib/pair'
 import type { Match } from '../lib/types'
 
 export function ApprovalsPage() {
-  const { t, user, incoming, allMatches, messages, notifications } = useApp()
+  const { t, user, incoming, allMatches, messages, notifications, profileById } = useApp()
   const paid = incoming.filter((m) => m.status === 'selected_and_paid')
-  const conversations = allMatches.filter(
-    (m) =>
-      m.status === 'partner_approved' &&
-      user &&
-      (m.userId === user.id || m.candidateId === user.id),
-  )
+  const conversations = user
+    ? uniqueByOther(
+        allMatches.filter(
+          (m) => m.status === 'partner_approved' && (m.userId === user.id || m.candidateId === user.id),
+        ),
+        user.id,
+        profileById,
+        messages,
+      )
+    : []
 
   if (paid.length === 0 && conversations.length === 0) {
     return <p className="rounded-3xl bg-card p-8 text-ink/60">{t.emptyInbox}</p>
   }
 
+  const pairIds = (m: Match) => {
+    if (!user) return [m.id]
+    const person = profileById(otherParty(m, user.id))
+    if (!person) return [m.id]
+    return pairMatchesForPerson(allMatches, user.id, person, profileById).map((x) => x.id)
+  }
+
   const sortedChats = [...conversations].sort((a, b) => {
-    const la = lastMessage(messages, a.id)?.createdAt ?? a.approvedAt ?? a.createdAt
-    const lb = lastMessage(messages, b.id)?.createdAt ?? b.approvedAt ?? b.createdAt
+    const la = lastMessage(messages, pairIds(a))?.createdAt ?? a.approvedAt ?? a.createdAt
+    const lb = lastMessage(messages, pairIds(b))?.createdAt ?? b.approvedAt ?? b.createdAt
     return lb.localeCompare(la)
   })
 
@@ -38,22 +50,27 @@ export function ApprovalsPage() {
       {sortedChats.length > 0 && (
         <section className="space-y-3">
           <h2 className="text-lg font-bold">{t.conversations}</h2>
-          {sortedChats.map((m) => (
-            <ConversationCard
-              key={m.id}
-              match={m}
-              unread={notifications.filter((n) => n.type === 'message' && !n.read && n.matchId === m.id).length}
-            />
-          ))}
+          {sortedChats.map((m) => {
+            const ids = new Set(pairIds(m))
+            return (
+              <ConversationCard
+                key={m.id}
+                match={m}
+                pairIds={ids}
+                unread={notifications.filter((n) => n.type === 'message' && !n.read && n.matchId && ids.has(n.matchId)).length}
+              />
+            )
+          })}
         </section>
       )}
     </div>
   )
 }
 
-function lastMessage(messages: { matchId: string; createdAt: string }[], matchId: string) {
+function lastMessage(messages: { matchId: string; createdAt: string }[], matchIds: string[]) {
+  const ids = new Set(matchIds)
   return messages
-    .filter((m) => m.matchId === matchId)
+    .filter((m) => ids.has(m.matchId))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
 }
 
@@ -126,13 +143,13 @@ function IncomingCard({ match }: { match: Match }) {
   )
 }
 
-function ConversationCard({ match, unread }: { match: Match; unread: number }) {
+function ConversationCard({ match, unread, pairIds }: { match: Match; unread: number; pairIds: Set<string> }) {
   const { t, user, profileById, messages } = useApp()
   if (!user) return null
   const other = profileById(match.userId === user.id ? match.candidateId : match.userId)
   if (!other) return null
   const last = messages
-    .filter((m) => m.matchId === match.id)
+    .filter((m) => pairIds.has(m.matchId))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
 
   return (

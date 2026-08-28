@@ -22,6 +22,7 @@ import { addMembershipPeriod, isMemberActive, MEMBER_PRICE_ILS } from '../lib/me
 import { isOffensive } from '../lib/moderation'
 import { DEFAULT_PAYMENT_SETTINGS, type PaymentSettings } from '../lib/payments'
 import { curateMatches } from '../lib/matching'
+import { chattingIds, engagedIds, otherParty, overlapsKnown, pickCanonicalMatch, uniqueByOther } from '../lib/pair'
 import { SEED_PROFILES } from '../lib/seed'
 import { holdInbox, isInboxHeld, isLiveMatch, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
@@ -303,21 +304,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const user = store.profiles.find((p) => p.id === store.currentUserId) ?? null
 
-  const matches = useMemo(
-    () =>
-      store.matches
-        .filter((m) => m.userId === store.currentUserId && m.status !== 'declined' && !m.candidateId.startsWith('seed-'))
-        .slice(0, 4),
-    [store.matches, store.currentUserId],
-  )
+  const matches = useMemo(() => {
+    const me = store.currentUserId
+    if (!me) return []
+    const byId = (id: string) => store.profiles.find((p) => p.id === id)
+    const busy = engagedIds(store.matches, me)
+    const pending = store.matches.filter((m) => {
+      if (m.userId !== me || m.status !== 'pending' || m.candidateId.startsWith('seed-')) return false
+      const person = byId(m.candidateId)
+      return person ? !overlapsKnown(person, busy, byId) : !busy.has(m.candidateId)
+    })
+    return uniqueByOther(pending, me, byId, store.messages).slice(0, 4)
+  }, [store.matches, store.currentUserId, store.profiles, store.messages])
 
-  const incoming = useMemo(
-    () =>
-      store.matches.filter(
-        (m) => m.candidateId === store.currentUserId && (m.status === 'selected_and_paid' || m.status === 'partner_approved'),
-      ),
-    [store.matches, store.currentUserId],
-  )
+  const incoming = useMemo(() => {
+    const me = store.currentUserId
+    if (!me) return []
+    const byId = (id: string) => store.profiles.find((p) => p.id === id)
+    const chatting = chattingIds(store.matches, me)
+    const paid = store.matches.filter((m) => {
+      if (m.candidateId !== me || m.status !== 'selected_and_paid') return false
+      const person = byId(m.userId)
+      return person ? !overlapsKnown(person, chatting, byId) : !chatting.has(m.userId)
+    })
+    return uniqueByOther(paid, me, byId, store.messages)
+  }, [store.matches, store.currentUserId, store.profiles, store.messages])
 
   const unreadChat = store.notifications.filter(
     (n) => n.userId === store.currentUserId && n.type === 'message' && !n.read,
@@ -451,9 +462,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         void upsertCloudProfile(updated)
         if (isInboxHeld()) return { ...s, profiles }
         const me = profiles.find((p) => p.id === user.id)!
-        const mine = s.matches.filter((m) => m.userId === me.id)
         const others = s.matches.filter((m) => m.userId !== me.id)
-        const curated = curateMatches(me, profiles, mine)
+        const curated = curateMatches(me, profiles, s.matches)
         void upsertCloudMatches(curated)
         return { ...s, profiles, matches: [...others, ...curated] }
       })
@@ -464,9 +474,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       patch((s) => {
         const me = s.profiles.find((p) => p.id === user.id)
         if (!me) return s
-        const mine = s.matches.filter((m) => m.userId === me.id && !m.candidateId.startsWith('seed-'))
         const others = s.matches.filter((m) => m.userId !== me.id && !m.candidateId.startsWith('seed-'))
-        const curated = curateMatches(me, s.profiles, mine)
+        const curated = curateMatches(me, s.profiles, s.matches)
         void upsertCloudMatches(curated)
         return { ...s, matches: [...others, ...curated] }
       })
@@ -479,9 +488,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const marked = s.matches.map((m) => (m.id === matchId ? { ...m, status: 'declined' as const } : m))
         const declined = marked.find((m) => m.id === matchId)
         if (declined) void upsertCloudMatches([declined])
-        const mine = marked.filter((m) => m.userId === me.id)
         const others = marked.filter((m) => m.userId !== me.id)
-        const curated = curateMatches(me, s.profiles, mine)
+        const curated = curateMatches(me, s.profiles, marked)
         void upsertCloudMatches(curated)
         return { ...s, matches: [...others, ...curated] }
       })
@@ -628,14 +636,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         body: body.trim(),
         createdAt: new Date().toISOString(),
       }
-      const match = store.matches.find((m) => m.id === matchId)
-      const otherId = match ? (match.userId === user.id ? match.candidateId : match.userId) : null
+      const raw = store.matches.find((m) => m.id === matchId)
+      const otherId = raw ? otherParty(raw, user.id) : null
+      const canonical = otherId ? pickCanonicalMatch(store.matches, user.id, otherId, store.messages) : raw
+      const match = canonical ?? raw
+      const targetId = match?.id ?? matchId
+      msg.matchId = targetId
       patch((s) => ({ ...s, messages: [...s.messages, msg] }))
       try {
         if (match) await upsertCloudMatches([match])
         const via = await insertCloudMessage(msg)
         if (via === 'row' && otherId) {
-          await insertCloudNotification(otherId, matchId, 'message', msg.body.slice(0, 80))
+          await insertCloudNotification(otherId, targetId, 'message', msg.body.slice(0, 80))
         }
         const cloudMsgs = await fetchVisibleCloudMessages()
         patch((s) => {

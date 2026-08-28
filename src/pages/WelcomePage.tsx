@@ -19,7 +19,6 @@ export function WelcomePage() {
           </div>
           <p className="text-sm font-semibold tracking-wide text-gold">{t.mustRegister}</p>
           <h1 className="display mt-3 text-4xl leading-[1.15] font-semibold md:text-6xl">{t.tagline}</h1>
-          <p className="mt-5 max-w-md text-lg text-ink/70">{t.sub}</p>
           <p className="mt-3 text-sm text-ink/55">{t.desktop}</p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Link
@@ -39,15 +38,14 @@ export function WelcomePage() {
           </div>
         </div>
         <div className="grid max-w-md gap-3">
-          {['01', '02', '03'].map((n, i) => (
-            <div key={n} className="rounded-3xl bg-card p-5 shadow-sm ring-1 ring-ink/5">
-              <div className="text-xs font-bold text-gold">{n}</div>
-              <p className="mt-1 font-semibold">
-                {i === 0 ? t.qTitle : i === 1 ? t.curated : t.unlockFor}
-              </p>
-              <p className="mt-1 text-sm text-ink/60">
-                {i === 0 ? t.sub : i === 1 ? t.curatedHint : t.unlockExplain}
-              </p>
+          {[
+            { n: '01', title: t.qTitle },
+            { n: '02', title: t.unlockFor, body: t.unlockExplain },
+          ].map((step) => (
+            <div key={step.n} className="rounded-3xl bg-card p-5 shadow-sm ring-1 ring-ink/5">
+              <div className="text-xs font-bold text-gold">{step.n}</div>
+              <p className="mt-1 font-semibold">{step.title}</p>
+              {step.body ? <p className="mt-1 text-sm text-ink/60">{step.body}</p> : null}
             </div>
           ))}
         </div>

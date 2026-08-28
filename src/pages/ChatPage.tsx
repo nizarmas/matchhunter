@@ -1,29 +1,44 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { OnlineBadge } from '../components/OnlineBadge'
-import { otherSharedContact } from '../lib/contact'
+import { pairSharedContact } from '../lib/contact'
+import { otherParty, pairMatchesForPerson, pickCanonicalMatch } from '../lib/pair'
 
 export function ChatPage() {
   const { matchId } = useParams()
+  const nav = useNavigate()
   const { t, user, allMatches, messages, profileById, sendMessage, markMatchRead } = useApp()
   const [body, setBody] = useState('')
   const [notice, setNotice] = useState('')
 
-  const match = allMatches.find((m) => m.id === matchId)
-
-  const other = match
-    ? profileById(match.userId === user?.id ? match.candidateId : match.userId)
-    : undefined
+  const opened = allMatches.find((m) => m.id === matchId)
+  const otherId = opened && user ? otherParty(opened, user.id) : undefined
+  const other = otherId ? profileById(otherId) : undefined
+  const pair =
+    user && other ? pairMatchesForPerson(allMatches, user.id, other, profileById) : []
+  const match =
+    user && otherId ? pickCanonicalMatch(allMatches, user.id, otherId, messages) ?? opened : opened
+  const pairKey = pair.map((m) => m.id).join('|')
+  const pairIds = useMemo(() => (pairKey ? pairKey.split('|') : []), [pairKey])
 
   const thread = useMemo(
-    () => messages.filter((m) => m.matchId === matchId).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    [messages, matchId],
+    () =>
+      messages
+        .filter((m) => pairIds.includes(m.matchId))
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    [messages, pairIds],
   )
 
   useEffect(() => {
-    if (matchId) markMatchRead(matchId)
-  }, [matchId])
+    if (match && matchId && match.id !== matchId && match.status === 'partner_approved') {
+      nav(`/app/chat/${match.id}`, { replace: true })
+    }
+  }, [match, matchId, nav])
+
+  useEffect(() => {
+    for (const id of pairIds) markMatchRead(id)
+  }, [pairIds.join('|')])
 
   if (!match || match.status !== 'partner_approved' || !other || !user) {
     return (
@@ -38,7 +53,7 @@ export function ChatPage() {
 
   const openId = match.id
   const blocked = Boolean(user.chatBlocked)
-  const revealed = otherSharedContact(match, other)
+  const revealed = pairSharedContact(pair, other)
 
   async function onSend(e: FormEvent) {
     e.preventDefault()

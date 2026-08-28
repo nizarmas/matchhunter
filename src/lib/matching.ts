@@ -101,6 +101,12 @@ export function scoreMatch(me: Questionnaire, them: Profile) {
 export function curateMatches(me: Profile, pool: Profile[], existing: Match[]): Match[] {
   const mine = existing.filter((m) => m.userId === me.id)
   const taken = new Set(mine.map((m) => m.candidateId))
+  const busy = new Set<string>()
+  for (const m of existing) {
+    if (m.status === 'pending' || m.status === 'declined') continue
+    if (m.userId === me.id) busy.add(m.candidateId)
+    else if (m.candidateId === me.id) busy.add(m.userId)
+  }
   const scored = pool
     .filter((p) => !p.id.startsWith('seed-') && !isSamePerson(me, p) && p.onboardingComplete)
     .map((p) => ({ p, ...scoreMatch(me.questionnaire, p) }))
@@ -116,14 +122,23 @@ export function curateMatches(me: Profile, pool: Profile[], existing: Match[]): 
     if (other && isSamePerson(me, other)) return false
     return m.status !== 'declined' && m.status !== 'pending'
   })
-  const pendingKeep = mine.filter((m) => m.status === 'pending' && ranked.some((r) => r.p.id === m.candidateId))
+  const busyPeople = pool.filter((p) => busy.has(p.id))
+  const pendingKeep = mine.filter((m) => {
+    if (m.status !== 'pending' || busy.has(m.candidateId)) return false
+    const cand = pool.find((p) => p.id === m.candidateId)
+    if (cand && busyPeople.some((q) => isSamePerson(q, cand))) return false
+    return ranked.some((r) => r.p.id === m.candidateId)
+  })
 
   const result = [...kept, ...pendingKeep]
   const have = new Set(result.map((m) => m.candidateId))
+  const skipIds = new Set([...busy, ...taken, ...have])
+  const skipPeople = pool.filter((p) => skipIds.has(p.id))
+  const alreadyHave = (p: Profile) => skipIds.has(p.id) || skipPeople.some((q) => isSamePerson(q, p))
 
   for (const row of ranked) {
-    if (result.length >= 4) break
-    if (have.has(row.p.id) || taken.has(row.p.id)) continue
+    if (result.filter((m) => m.status === 'pending').length >= 4) break
+    if (alreadyHave(row.p)) continue
     result.push({
       id: uid(),
       userId: me.id,
@@ -134,7 +149,11 @@ export function curateMatches(me: Profile, pool: Profile[], existing: Match[]): 
       createdAt: new Date().toISOString(),
     })
     have.add(row.p.id)
+    skipIds.add(row.p.id)
+    skipPeople.push(row.p)
   }
 
-  return result.slice(0, 4)
+  const approved = result.filter((m) => m.status !== 'pending')
+  const pending = result.filter((m) => m.status === 'pending').slice(0, 4)
+  return [...approved, ...pending]
 }
