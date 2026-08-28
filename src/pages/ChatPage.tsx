@@ -40,15 +40,15 @@ export function ChatPage() {
   const blocked = Boolean(user.chatBlocked)
   const revealed = otherSharedContact(match, other)
 
-  function onSend(e: FormEvent) {
+  async function onSend(e: FormEvent) {
     e.preventDefault()
-    const result = sendMessage(openId, body)
+    const result = await sendMessage(openId, body)
     if (result === 'ok') {
       setBody('')
       setNotice('')
       return
     }
-    setNotice(result === 'blocked' ? t.chatBlocked : t.chatWarn)
+    setNotice(result === 'blocked' ? t.chatBlocked : result === 'failed' ? t.chatSendFailed : t.chatWarn)
   }
 
   return (

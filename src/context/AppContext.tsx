@@ -56,6 +56,31 @@ function blankQuestionnaire(lang: Lang): Questionnaire {
   }
 }
 
+function mergeMatchList(cloud: Match[], local: Match[]) {
+  const rank: Record<Match['status'], number> = {
+    declined: -1,
+    pending: 0,
+    selected_and_paid: 1,
+    partner_approved: 2,
+  }
+  const map = new Map<string, Match>()
+  for (const m of local) map.set(m.id, m)
+  for (const c of cloud) {
+    const l = map.get(c.id)
+    if (!l) {
+      map.set(c.id, c)
+      continue
+    }
+    const richer = (rank[c.status] ?? 0) >= (rank[l.status] ?? 0) ? c : l
+    map.set(c.id, {
+      ...richer,
+      shareEmail: Boolean(l.shareEmail || c.shareEmail),
+      sharePhone: Boolean(l.sharePhone || c.sharePhone),
+    })
+  }
+  return [...map.values()].filter((m) => !m.candidateId.startsWith('seed-'))
+}
+
 function mergeProfiles(cloud: Profile[], local: Profile[]) {
   const map = new Map<string, Profile>()
   for (const p of SEED_PROFILES) map.set(p.id, p)
@@ -98,7 +123,7 @@ type AppCtx = {
   payForMatch: (matchId: string, gatewayId: string, gateway: Transaction['gateway']) => void
   demoApprove: (matchId: string) => void
   decideIncoming: (matchId: string, approve: boolean, share?: { email: boolean; phone: boolean }) => void
-  sendMessage: (matchId: string, body: string) => 'ok' | 'warned' | 'blocked'
+  sendMessage: (matchId: string, body: string) => Promise<'ok' | 'warned' | 'blocked' | 'failed'>
   isAdmin: boolean
   paymentSettings: PaymentSettings
   transactions: Transaction[]
@@ -167,8 +192,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ])
       patch((s) => {
         const profiles = mergeProfiles(cloudProfiles, s.profiles)
-        const unique = new Map(cloudMatches.map((m) => [m.id, m]))
-        let matches = [...unique.values()].filter((m) => !m.candidateId.startsWith('seed-'))
+        let matches = mergeMatchList(cloudMatches, s.matches)
         if (isInboxHeld()) matches = matches.filter(isLiveMatch)
         const txMap = new Map(s.transactions.map((t) => [t.id, t]))
         for (const t of cloudTx) txMap.set(t.id, t)
@@ -223,9 +247,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           fetchLastSeenMap(),
         ])
         patch((s) => {
-          const unique = new Map(cloudMatches.map((m) => [m.id, m]))
-          let matches = [...unique.values()].filter((m) => !m.candidateId.startsWith('seed-'))
+          let matches = mergeMatchList(cloudMatches, s.matches)
           if (isInboxHeld()) matches = matches.filter(isLiveMatch)
+          const ahead = matches.filter((m) => {
+            const c = cloudMatches.find((x) => x.id === m.id)
+            return m.status === 'partner_approved' && c && c.status !== 'partner_approved'
+          })
+          if (ahead.length) void upsertCloudMatches(ahead)
           const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
           for (const n of cloudNotes) noteMap.set(n.id, n)
           const msgMap = new Map(s.messages.map((m) => [m.id, m]))
@@ -579,7 +607,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       })
     },
-    sendMessage: (matchId, body) => {
+    sendMessage: async (matchId, body) => {
       if (!user || !body.trim()) return 'ok'
       if (user.chatBlocked) return 'blocked'
       if (isOffensive(body)) {
@@ -602,43 +630,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const match = store.matches.find((m) => m.id === matchId)
       const otherId = match ? (match.userId === user.id ? match.candidateId : match.userId) : null
-      const note: AppNotification | null =
-        otherId && otherId !== user.id
-          ? {
-              id: crypto.randomUUID(),
-              userId: otherId,
-              matchId,
-              type: 'message',
-              body: msg.body.slice(0, 80),
-              read: false,
-              createdAt: msg.createdAt,
-            }
-          : null
-      void (async () => {
-        try {
-          if (match) await upsertCloudMatches([match])
-          await insertCloudMessage(msg)
-          if (otherId) await insertCloudNotification(otherId, matchId, 'message', msg.body.slice(0, 80))
-        } catch {
-          /* local copy still kept */
+      patch((s) => ({ ...s, messages: [...s.messages, msg] }))
+      try {
+        if (match) await upsertCloudMatches([match])
+        const via = await insertCloudMessage(msg)
+        if (via === 'row' && otherId) {
+          await insertCloudNotification(otherId, matchId, 'message', msg.body.slice(0, 80))
         }
-        try {
-          const cloudMsgs = await fetchVisibleCloudMessages()
-          patch((s) => {
-            const msgMap = new Map(s.messages.map((m) => [m.id, m]))
-            for (const m of cloudMsgs) msgMap.set(m.id, m)
-            return { ...s, messages: [...msgMap.values()] }
-          })
-        } catch {
-          /* keep local */
-        }
-      })()
-      patch((s) => ({
-        ...s,
-        messages: [...s.messages, msg],
-        notifications: note ? [...s.notifications, note] : s.notifications,
-      }))
-      return 'ok'
+        const cloudMsgs = await fetchVisibleCloudMessages()
+        patch((s) => {
+          const msgMap = new Map(s.messages.map((m) => [m.id, m]))
+          for (const m of cloudMsgs) msgMap.set(m.id, m)
+          return { ...s, messages: [...msgMap.values()] }
+        })
+        return 'ok'
+      } catch {
+        return 'failed'
+      }
     },
     adminSetBlocked: (profileId, blocked) => {
       if (!user || !isAdmin || profileId === user.id) return

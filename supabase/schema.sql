@@ -120,7 +120,7 @@ create policy "messages_on_approved_match" on public.messages
     exists (
       select 1 from public.matches m
       where m.id = match_id
-        and m.status = 'partner_approved'
+        and m.status in ('selected_and_paid', 'partner_approved')
         and (m.user_id = auth.uid() or m.candidate_id = auth.uid())
     )
   );
@@ -132,7 +132,7 @@ create policy "messages_insert_approved" on public.messages
     and exists (
       select 1 from public.matches m
       where m.id = match_id
-        and m.status = 'partner_approved'
+        and m.status in ('selected_and_paid', 'partner_approved')
         and (m.user_id = auth.uid() or m.candidate_id = auth.uid())
     )
   );

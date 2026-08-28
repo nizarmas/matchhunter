@@ -2,7 +2,7 @@ import { supabase } from './supabase'
 import type { AppNotification, ChatMessage, Match, MatchStatus, Profile, Questionnaire, Transaction } from './types'
 
 export function isUuid(id: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
 }
 
 type ProfileRow = {
@@ -279,8 +279,13 @@ export async function insertCloudTransaction(tx: Transaction) {
   })
 }
 
-export async function insertCloudMessage(msg: ChatMessage) {
-  if (!supabase || !isUuid(msg.matchId)) return
+export async function insertCloudMessage(msg: ChatMessage): Promise<'rpc' | 'row'> {
+  if (!supabase || !isUuid(msg.matchId)) throw new Error('no_cloud')
+  const rpc = await supabase.rpc('send_chat_message', {
+    p_match_id: msg.matchId,
+    p_body: msg.body,
+  })
+  if (!rpc.error) return 'rpc'
   const { error } = await supabase.from('messages').insert({
     id: msg.id,
     match_id: msg.matchId,
@@ -288,6 +293,7 @@ export async function insertCloudMessage(msg: ChatMessage) {
     body: msg.body,
   })
   if (error) throw error
+  return 'row'
 }
 
 export async function insertCloudNotification(userId: string, matchId: string | undefined, type: string, body: string) {
