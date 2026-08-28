@@ -192,6 +192,10 @@ export const translations = {
     them: 'הצד השני',
     demoNote: 'מצב דמו — בלי Supabase. הנתונים נשמרים במכשיר.',
     footer: 'שני הצדדים חייבים להיות רשומים. אין זחילה לרשתות חברתיות.',
+    backToCustomers: 'חזרה ללקוחות',
+    questionnairePending: 'השאלון עדיין לא הושלם',
+    kidsLabel: 'משפחה',
+    joinedAt: 'הצטרפות',
   },
   ar: {
     brand: 'MatchHunter',
@@ -384,6 +388,10 @@ export const translations = {
     them: 'الطرف الآخر',
     demoNote: 'وضع تجريبي — بدون Supabase. البيانات على الجهاز.',
     footer: 'يجب أن يكون الطرفان مسجّلين. لا زحف لشبكات التواصل.',
+    backToCustomers: 'العودة إلى العملاء',
+    questionnairePending: 'الاستبيان لم يُكمل بعد',
+    kidsLabel: 'عائلة',
+    joinedAt: 'انضمام',
   },
   en: {
     brand: 'MatchHunter',
@@ -576,6 +584,10 @@ export const translations = {
     them: 'Them',
     demoNote: 'Demo mode — no Supabase. Data stays on this device.',
     footer: 'Both people must be registered. No social-media crawling.',
+    backToCustomers: 'Back to customers',
+    questionnairePending: 'The questionnaire is not completed yet',
+    kidsLabel: 'Family',
+    joinedAt: 'Joined',
   },
 } as const
 

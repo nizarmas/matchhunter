@@ -4,7 +4,7 @@ import {
   fetchCloudMatchesAll,
   fetchCloudNotifications,
   fetchCloudTransactions,
-  fetchCloudMessages,
+  fetchVisibleCloudMessages,
   fetchCloudProfiles,
   insertCloudMessage,
   insertCloudNotification,
@@ -19,7 +19,7 @@ import { isOffensive } from '../lib/moderation'
 import { DEFAULT_PAYMENT_SETTINGS, type PaymentSettings } from '../lib/payments'
 import { curateMatches } from '../lib/matching'
 import { SEED_PROFILES } from '../lib/seed'
-import { holdInbox, isInboxHeld, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
+import { holdInbox, isInboxHeld, isLiveMatch, loadStore, releaseInbox, rememberEmail, saveStore, type Store } from '../lib/store'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import type {
   AppNotification,
@@ -153,25 +153,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
         patch((s) => ({ ...s, currentUserId: null }))
         return
       }
-      const [cloudMatches, cloudTx, cloudNotes] = await Promise.all([
+      const [cloudMatches, cloudTx, cloudNotes, cloudMsgs] = await Promise.all([
         admin ? fetchCloudMatchesAll() : fetchCloudMatches(userId),
         fetchCloudTransactions(),
         fetchCloudNotifications(userId),
+        fetchVisibleCloudMessages(),
       ])
       patch((s) => {
         const profiles = mergeProfiles(cloudProfiles, s.profiles)
         const unique = new Map(cloudMatches.map((m) => [m.id, m]))
-        const matches = isInboxHeld() ? [] : [...unique.values()].filter((m) => !m.candidateId.startsWith('seed-'))
+        let matches = [...unique.values()].filter((m) => !m.candidateId.startsWith('seed-'))
+        if (isInboxHeld()) matches = matches.filter(isLiveMatch)
         const txMap = new Map(s.transactions.map((t) => [t.id, t]))
         for (const t of cloudTx) txMap.set(t.id, t)
         const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
         for (const n of cloudNotes) noteMap.set(n.id, n)
+        const msgMap = new Map(s.messages.map((m) => [m.id, m]))
+        for (const m of cloudMsgs) msgMap.set(m.id, m)
         return {
           ...s,
           profiles,
           matches,
           transactions: [...txMap.values()],
           notifications: [...noteMap.values()],
+          messages: [...msgMap.values()],
           currentUserId: userId,
         }
       })
@@ -198,6 +203,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
       data.subscription.unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!supabase || !store.currentUserId) return
+    const client = supabase
+    const uid = store.currentUserId
+    async function tick() {
+      try {
+        const [cloudMatches, cloudNotes, cloudMsgs] = await Promise.all([
+          fetchCloudMatches(uid),
+          fetchCloudNotifications(uid),
+          fetchVisibleCloudMessages(),
+        ])
+        patch((s) => {
+          const unique = new Map(cloudMatches.map((m) => [m.id, m]))
+          let matches = [...unique.values()].filter((m) => !m.candidateId.startsWith('seed-'))
+          if (isInboxHeld()) matches = matches.filter(isLiveMatch)
+          const noteMap = new Map(s.notifications.map((n) => [n.id, n]))
+          for (const n of cloudNotes) noteMap.set(n.id, n)
+          const msgMap = new Map(s.messages.map((m) => [m.id, m]))
+          for (const m of cloudMsgs) msgMap.set(m.id, m)
+          return {
+            ...s,
+            matches,
+            notifications: [...noteMap.values()],
+            messages: [...msgMap.values()],
+          }
+        })
+      } catch {
+        /* keep local */
+      }
+    }
+    const n = window.setInterval(() => void tick(), 3000)
+    const channel = client
+      .channel(`mh-live-${uid}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => void tick())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'matches' }, () => void tick())
+      .subscribe()
+    return () => {
+      window.clearInterval(n)
+      void client.removeChannel(channel)
+    }
+  }, [store.currentUserId])
 
   const user = store.profiles.find((p) => p.id === store.currentUserId) ?? null
 
@@ -519,8 +566,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         body: body.trim(),
         createdAt: new Date().toISOString(),
       }
-      void insertCloudMessage(msg)
-      void fetchCloudMessages(matchId)
+      void (async () => {
+        try {
+          await insertCloudMessage(msg)
+        } catch {
+          /* local copy still kept */
+        }
+        try {
+          const cloudMsgs = await fetchVisibleCloudMessages()
+          patch((s) => {
+            const msgMap = new Map(s.messages.map((m) => [m.id, m]))
+            for (const m of cloudMsgs) msgMap.set(m.id, m)
+            return { ...s, messages: [...msgMap.values()] }
+          })
+        } catch {
+          /* keep local */
+        }
+      })()
       patch((s) => ({ ...s, messages: [...s.messages, msg] }))
       return 'ok'
     },

@@ -147,6 +147,16 @@ export async function markCloudNotificationsRead(userId: string) {
   await supabase.from('notifications').update({ read: true }).eq('user_id', userId).eq('read', false)
 }
 
+function rowToMessage(m: { id: string; match_id: string; sender_id: string; body: string; created_at: string }): ChatMessage {
+  return {
+    id: m.id,
+    matchId: m.match_id,
+    senderId: m.sender_id,
+    body: m.body,
+    createdAt: m.created_at,
+  }
+}
+
 export async function fetchCloudMessages(matchId: string): Promise<ChatMessage[]> {
   if (!supabase) return []
   const { data, error } = await supabase
@@ -154,16 +164,15 @@ export async function fetchCloudMessages(matchId: string): Promise<ChatMessage[]
     .select('*')
     .eq('match_id', matchId)
     .order('created_at', { ascending: true })
-  if (error) throw error
-  return ((data ?? []) as { id: string; match_id: string; sender_id: string; body: string; created_at: string }[]).map(
-    (m) => ({
-      id: m.id,
-      matchId: m.match_id,
-      senderId: m.sender_id,
-      body: m.body,
-      createdAt: m.created_at,
-    }),
-  )
+  if (error || !data) return []
+  return (data as { id: string; match_id: string; sender_id: string; body: string; created_at: string }[]).map(rowToMessage)
+}
+
+export async function fetchVisibleCloudMessages(): Promise<ChatMessage[]> {
+  if (!supabase) return []
+  const { data, error } = await supabase.from('messages').select('*').order('created_at', { ascending: true })
+  if (error || !data) return []
+  return (data as { id: string; match_id: string; sender_id: string; body: string; created_at: string }[]).map(rowToMessage)
 }
 
 export async function upsertCloudProfile(p: Profile) {
@@ -216,21 +225,30 @@ export async function upsertCloudMatches(matches: Match[]) {
   if (!supabase) return
   const rows = matches.filter((m) => isUuid(m.candidateId) && isUuid(m.userId) && isUuid(m.id))
   if (rows.length === 0) return
-  const { error } = await supabase.from('matches').upsert(
-    rows.map((m) => ({
-      id: m.id,
-      user_id: m.userId,
-      candidate_id: m.candidateId,
-      score: m.score,
-      reasons: m.reasons,
-      status: m.status,
-      paid_at: m.paidAt ?? null,
-      approved_at: m.approvedAt ?? null,
-      share_email: Boolean(m.shareEmail),
-      share_phone: Boolean(m.sharePhone),
-    })),
+  const payload = rows.map((m) => ({
+    id: m.id,
+    user_id: m.userId,
+    candidate_id: m.candidateId,
+    score: m.score,
+    reasons: m.reasons,
+    status: m.status,
+    paid_at: m.paidAt ?? null,
+    approved_at: m.approvedAt ?? null,
+    share_email: Boolean(m.shareEmail),
+    share_phone: Boolean(m.sharePhone),
+  }))
+  const { error } = await supabase.from('matches').upsert(payload)
+  if (!error) return
+  const missingShare = /share_email|share_phone|schema cache/i.test(error.message ?? '')
+  if (!missingShare) throw error
+  const { error: retry } = await supabase.from('matches').upsert(
+    payload.map(({ share_email, share_phone, ...rest }) => {
+      void share_email
+      void share_phone
+      return rest
+    }),
   )
-  if (error) throw error
+  if (retry) throw retry
 }
 
 export async function insertCloudTransaction(tx: Transaction) {

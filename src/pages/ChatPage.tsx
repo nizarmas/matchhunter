@@ -5,12 +5,11 @@ import { otherSharedContact } from '../lib/contact'
 
 export function ChatPage() {
   const { matchId } = useParams()
-  const { t, user, matches, incoming, messages, profileById, sendMessage } = useApp()
+  const { t, user, allMatches, messages, profileById, sendMessage } = useApp()
   const [body, setBody] = useState('')
   const [notice, setNotice] = useState('')
 
-  const match =
-    matches.find((m) => m.id === matchId) ?? incoming.find((m) => m.id === matchId && m.status === 'partner_approved')
+  const match = allMatches.find((m) => m.id === matchId)
 
   const other = match
     ? profileById(match.userId === user?.id ? match.candidateId : match.userId)

@@ -48,6 +48,7 @@ export default function App() {
         <Route path="chat/:matchId" element={<ChatPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="admin" element={<AdminPage />} />
+        <Route path="admin/profile/:profileId" element={<ProfilePage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

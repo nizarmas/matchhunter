@@ -39,6 +39,10 @@ function withSeeds(parsed: Store): Store {
   }
 }
 
+export function isLiveMatch(m: Match) {
+  return m.status === 'selected_and_paid' || m.status === 'partner_approved'
+}
+
 export function isInboxHeld() {
   return localStorage.getItem(HOLD_INBOX) === '1'
 }
@@ -66,7 +70,9 @@ export function loadStore(): Store {
     const raw = localStorage.getItem(KEY)
     if (!raw) return empty()
     const next = withSeeds(JSON.parse(raw) as Store)
-    if (isInboxHeld()) return { ...next, matches: [] }
+    if (isInboxHeld()) {
+      return { ...next, matches: (next.matches ?? []).filter(isLiveMatch) }
+    }
     return next
   } catch {
     return empty()

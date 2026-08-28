@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, Link } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { isMemberActive, MEMBER_MONTHS, MEMBER_PRICE_ILS } from '../lib/membership'
 import type { PaymentSettings } from '../lib/payments'
@@ -268,12 +268,20 @@ export function AdminPage() {
                   <p className="text-sm text-ink/60">
                     {p.email ?? '—'} · {p.phone || '—'} · {p.questionnaire.age}
                   </p>
-                  <p className="mt-1 text-xs">
-                    {p.accountBlocked ? t.blockUser : member ? t.memberActive : t.unlockFor}
-                    {p.membershipUntil
-                      ? ` · ${new Date(p.membershipUntil).toLocaleDateString('he-IL')}`
-                      : ''}
-                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <p className="text-xs">
+                      {p.accountBlocked ? t.blockUser : member ? t.memberActive : t.unlockFor}
+                      {p.membershipUntil
+                        ? ` · ${new Date(p.membershipUntil).toLocaleDateString('he-IL')}`
+                        : ''}
+                    </p>
+                    <Link
+                      to={`/app/admin/profile/${p.id}`}
+                      className="rounded-full bg-mist px-3 py-1 text-xs font-bold"
+                    >
+                      {t.profile}
+                    </Link>
+                  </div>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
