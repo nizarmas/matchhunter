@@ -177,13 +177,14 @@ drop policy if exists "profiles_admin_delete" on public.profiles;
 create policy "profiles_admin_delete" on public.profiles
   for delete to authenticated using (public.is_admin());
 
-
+alter table public.matches add column if not exists share_email boolean not null default false;
+alter table public.matches add column if not exists share_phone boolean not null default false;
 
 -- Wipe ALL memberships, payments, and paid/approved match states.
 update public.profiles set membership_until = null;
 delete from public.transactions;
 update public.matches
-set status = 'pending', paid_at = null, approved_at = null
+set status = 'pending', paid_at = null, approved_at = null, share_email = false, share_phone = false
 where status in ('selected_and_paid', 'partner_approved');
 
 notify pgrst, 'reload schema';

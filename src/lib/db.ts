@@ -42,6 +42,8 @@ type MatchRow = {
   status: MatchStatus
   paid_at: string | null
   approved_at: string | null
+  share_email: boolean | null
+  share_phone: boolean | null
   created_at: string
 }
 
@@ -92,6 +94,8 @@ export function rowToMatch(row: MatchRow): Match {
     createdAt: row.created_at,
     paidAt: row.paid_at ?? undefined,
     approvedAt: row.approved_at ?? undefined,
+    shareEmail: Boolean(row.share_email),
+    sharePhone: Boolean(row.share_phone),
   }
 }
 
@@ -222,6 +226,8 @@ export async function upsertCloudMatches(matches: Match[]) {
       status: m.status,
       paid_at: m.paidAt ?? null,
       approved_at: m.approvedAt ?? null,
+      share_email: Boolean(m.shareEmail),
+      share_phone: Boolean(m.sharePhone),
     })),
   )
   if (error) throw error

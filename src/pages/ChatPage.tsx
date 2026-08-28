@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
+import { otherSharedContact } from '../lib/contact'
 
 export function ChatPage() {
   const { matchId } = useParams()
@@ -26,6 +27,7 @@ export function ChatPage() {
 
   const openId = match.id
   const blocked = Boolean(user.chatBlocked)
+  const revealed = otherSharedContact(match, other)
 
   function onSend(e: FormEvent) {
     e.preventDefault()
@@ -42,9 +44,28 @@ export function ChatPage() {
     <div className="mx-auto flex min-h-[70dvh] max-w-xl flex-col rounded-[32px] bg-card shadow-sm ring-1 ring-ink/5">
       <header className="border-b border-mist px-5 py-4">
         <h1 className="text-lg font-bold">{other.name}</h1>
-        <p className="text-sm text-ink/60">
-          {t.phoneReveal}: {other.phone}
-        </p>
+        {revealed.phone || revealed.email ? (
+          <div className="mt-1 space-y-0.5 text-sm text-ink/70">
+            {revealed.phone ? (
+              <p>
+                {t.phoneReveal}:{' '}
+                <a className="font-semibold text-wine" href={`tel:${revealed.phone}`}>
+                  {revealed.phone}
+                </a>
+              </p>
+            ) : null}
+            {revealed.email ? (
+              <p>
+                {t.emailReveal}:{' '}
+                <a className="font-semibold text-wine" href={`mailto:${revealed.email}`}>
+                  {revealed.email}
+                </a>
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="text-sm text-ink/55">{t.contactHidden}</p>
+        )}
       </header>
       <div className="flex-1 space-y-2 overflow-y-auto p-4">
         {thread.length === 0 && <p className="text-sm text-ink/45">{t.paidHint}</p>}

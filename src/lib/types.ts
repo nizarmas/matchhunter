@@ -68,6 +68,8 @@ export type Match = {
   createdAt: string
   paidAt?: string
   approvedAt?: string
+  shareEmail?: boolean
+  sharePhone?: boolean
 }
 
 export type Transaction = {

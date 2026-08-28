@@ -93,7 +93,7 @@ type AppCtx = {
   sendRequest: (matchId: string) => void
   payForMatch: (matchId: string, gatewayId: string, gateway: Transaction['gateway']) => void
   demoApprove: (matchId: string) => void
-  decideIncoming: (matchId: string, approve: boolean) => void
+  decideIncoming: (matchId: string, approve: boolean, share?: { email: boolean; phone: boolean }) => void
   sendMessage: (matchId: string, body: string) => 'ok' | 'warned' | 'blocked'
   isAdmin: boolean
   paymentSettings: PaymentSettings
@@ -447,14 +447,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     demoApprove: (matchId) => {
       patch((s) => {
         const next = s.matches.map((m) =>
-          m.id === matchId ? { ...m, status: 'partner_approved' as const, approvedAt: new Date().toISOString() } : m,
+          m.id === matchId
+            ? {
+                ...m,
+                status: 'partner_approved' as const,
+                approvedAt: new Date().toISOString(),
+                shareEmail: false,
+                sharePhone: false,
+              }
+            : m,
         )
         const found = next.find((m) => m.id === matchId)
         if (found) void upsertCloudMatches([found])
         return { ...s, matches: next }
       })
     },
-    decideIncoming: (matchId, approve) => {
+    decideIncoming: (matchId, approve, share) => {
       if (!user) return
       patch((s) => {
         const match = s.matches.find((m) => m.id === matchId)
@@ -475,6 +483,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 ...m,
                 status: (approve ? 'partner_approved' : 'declined') as Match['status'],
                 approvedAt: approve ? new Date().toISOString() : m.approvedAt,
+                shareEmail: approve ? Boolean(share?.email) : false,
+                sharePhone: approve ? Boolean(share?.phone) : false,
               }
             : m,
         )

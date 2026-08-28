@@ -66,7 +66,7 @@ export function MatchCard({ match }: { match: Match }) {
             to={`/app/chat/${match.id}`}
             className="block rounded-2xl bg-olive py-3 text-center text-sm font-bold text-paper"
           >
-            {t.chat} · {t.contact}
+            {match.shareEmail || match.sharePhone ? `${t.chat} · ${t.contact}` : t.chat}
           </Link>
         )}
         {match.status === 'declined' && (

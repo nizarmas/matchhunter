@@ -43,6 +43,8 @@ create table if not exists public.matches (
     check (status in ('pending', 'selected_and_paid', 'partner_approved', 'declined')),
   paid_at timestamptz,
   approved_at timestamptz,
+  share_email boolean not null default false,
+  share_phone boolean not null default false,
   created_at timestamptz default now(),
   unique (user_id, candidate_id)
 );
